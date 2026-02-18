@@ -11,7 +11,7 @@
 const std = @import("std");
 const uefi = std.os.uefi;
 const gop = uefi.protocol.GraphicsOutput;
-const LinuxKernel = @import("LinuxKernel");
+const CatalystKernel = @import("CatalystKernel");
 const ir_data = @embedFile("ir_generated.bin");
 
 pub fn main() uefi.Status {
@@ -24,11 +24,11 @@ pub fn main() uefi.Status {
     _ = con_out.outputString(msg) catch {};
 
     // Browse CD-ROM Explorer at the time where the boot_service
-    LinuxKernel.findAndBootCdrom();
-    LinuxKernel.execute_python_ir(ir_data);
+    CatalystKernel.findAndBootCdrom();
+    CatalystKernel.execute_python_ir(ir_data);
 
-    LinuxKernel.Serial.write('H');
-    LinuxKernel.Serial.write('I');
+    CatalystKernel.Serial.write('H');
+    CatalystKernel.Serial.write('I');
 
     while (true) {
         asm volatile ("hlt");

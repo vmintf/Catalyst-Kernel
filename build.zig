@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     // Python IR builder stage
     const python_step = b.addSystemCommand(&.{ "python", "kernel.py" });
 
-    const mod = b.addModule("LinuxKernel", .{
+    const mod = b.addModule("CatalystKernel", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{ .{ .name = "LinuxKernel", .module = mod } },
+            .imports = &.{ .{ .name = "CatalystKernel", .module = mod } },
         }),
     });
 
