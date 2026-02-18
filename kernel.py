@@ -1,7 +1,7 @@
 import struct
 import tomllib
 
-# hardware.toml에서 opcode 및 디바이스 주소 로딩
+# Loading opcode and device addresses from hardware.toml
 with open("toml/hardware.toml", "rb") as f:
     hw = tomllib.load(f)
 
