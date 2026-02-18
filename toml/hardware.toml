@@ -1,0 +1,18 @@
+[ir]
+version = "1.0"
+
+[opcodes]
+literal      = 0x01
+write_serial = 0x10
+add_u32      = 0x30
+sub_u32      = 0x31
+mem_write    = 0x40
+mem_read     = 0x41
+loop         = 0x50
+jmp          = 0x51
+halt         = 0xFF
+
+[devices]
+serial = 0x3F8
+vga    = 0xB8000
+timer  = 0x40
