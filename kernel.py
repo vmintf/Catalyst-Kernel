@@ -8,7 +8,7 @@ with open("toml/hardware.toml", "rb") as f:
 OPCODES = hw["opcodes"]
 DEVICES = hw["devices"]
 
-# opcode 상수 동적 바인딩
+# opcode constant dynamic binding
 OP_LITERAL      = OPCODES["literal"]
 OP_WRITE_SERIAL = OPCODES["write_serial"]
 OP_ADD_U32      = OPCODES["add_u32"]
@@ -45,13 +45,13 @@ class mem_read:
         self.addr = addr
 
 class loop_ir:
-    """OP_LOOP: count만큼 body IR 반복 실행"""
+    """OP_LOOP: Repeat body IR as many times as count"""
     def __init__(self, count: int, body: list):
         self.count = count
         self.body = body
 
 class jmp_ir:
-    """OP_JMP: 조건 없이 offset만큼 PC 이동"""
+    """OP_JMP: Move PC by offset without condition"""
     def __init__(self, offset: int):
         self.offset = offset
 
@@ -62,7 +62,7 @@ class KernelDecorator:
         self._devices = {}
 
     def register(self, name: str):
-        """물리 주소를 디바이스 이름으로 등록하는 데코레이터"""
+        """Decorator to register physical addresses as device names"""
         addr = DEVICES[name]
         def decorator(func):
             def wrapper(value: u32):
@@ -123,7 +123,7 @@ class KernelDecorator:
 
 kernel = KernelDecorator()
 
-# 디바이스 등록
+# Device register
 @kernel.register("serial")
 def write_serial(value: u32): ...
 
@@ -131,20 +131,20 @@ def write_serial(value: u32): ...
 def write_vga(value: u32): ...
 
 
-# 정적 그래프 (AOT)
+# Static Graph (AOT)
 @kernel
 def calc_and_print(a: u32):
     return a + u32(5)  # 0x41 + 5 = 0x46 ('F')
 
 
 if __name__ == "__main__":
-    # 정적 연산
+    # Static Calc
     calc_and_print(u32(0x41))
 
-    # 디바이스 직접 접근
+    # Direct Device Access
     write_serial(u32(0x47))  # 'G'
 
-    # 루프: 'A' 3번 출력
+    # Loop: 'A' third times
     kernel._serialize(loop_ir(3, [
         IRNode(OP_WRITE_SERIAL, [u32(0x41)])
     ]))

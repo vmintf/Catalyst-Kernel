@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
-    // 파이썬 IR 빌더 단계
+    // Python IR builder stage
     const python_step = b.addSystemCommand(&.{ "python", "kernel.py" });
 
     const mod = b.addModule("LinuxKernel", .{
@@ -28,8 +28,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // 제약 사항 적용
-    // exe.use_llvm = false; // Non-LLVM [cite: 18, 19]
+    // constraint apply
     exe.subsystem = .EfiApplication;
 
     exe.step.dependOn(&python_step.step);

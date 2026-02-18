@@ -13,7 +13,7 @@ pub fn main() uefi.Status {
     const msg = std.unicode.utf8ToUtf16LeStringLiteral("Zig-Python Kernel Online\r\n");
     _ = con_out.outputString(msg) catch {};
 
-    // boot_services 살아있는 시점에 CD-ROM 탐색
+    // Browse CD-ROM Explorer at the time where the boot_service
     LinuxKernel.findAndBootCdrom();
     LinuxKernel.execute_python_ir(ir_data);
 
