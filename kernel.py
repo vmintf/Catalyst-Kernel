@@ -1,5 +1,5 @@
 # Catalyst Kernel - A bare-metal UEFI kernel using Python DSL and Zig comptime AOT compilation.
-# Copyright (C) 2025  Skystarry.xyz
+# Copyright (C) 2026  Skystarry.xyz
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
