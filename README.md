@@ -26,7 +26,7 @@ root.zig  (Zig)
     │  serial I/O, keyboard, memory, port I/O, interrupt control
     │
     ▼
-BOOTX64.EFI  (172 KB)  →  kernel.iso  (1.1 MB)
+BOOTX64.EFI  (184 KB)  →  kernel.iso  (1.1 MB)
 ```
 
 ## Opcode Set
