@@ -1,6 +1,6 @@
 # Catalyst Kernel – shell command definitions.
 # Each command has a name, description, and an optional list of arguments.
-# The kernel.py shell compiler reads this file to generate the IR dispatch table.
+# The entry.py shell compiler reads this file to generate the IR dispatch table.
 
 [commands.help]
 description = "Show available commands"
