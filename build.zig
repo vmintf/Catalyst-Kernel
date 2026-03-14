@@ -20,10 +20,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Python IR builder stage
-    const python_step = b.addSystemCommand(&.{ "python", "kernel.py" });
+    const python_step = b.addSystemCommand(&.{ "python", "frontend/entry.py" });
 
     const mod = b.addModule("CatalystKernel", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("backend/src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "BOOTX64",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("backend/src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "CatalystKernel", .module = mod } },

@@ -12,7 +12,7 @@ const std = @import("std");
 const uefi = std.os.uefi;
 const gop = uefi.protocol.GraphicsOutput;
 const CatalystKernel = @import("CatalystKernel");
-const ir_data = @embedFile("ir_generated.bin");
+const ir_data = @embedFile("kernel/ir_generated.bin");
 
 pub fn main() uefi.Status {
     const st = uefi.system_table;
