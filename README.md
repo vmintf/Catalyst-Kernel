@@ -105,8 +105,9 @@ build.zig          # Zig build configuration
 Makefile           # Build orchestration
 ```
 
-## AI Used project
-Architected by Skystarry.xyz, synthesized via Claude & Gemini.
+## Development Credits
+​Concept & Architecture: Skystarry.xyz
+Implementation Support: Claude 4.6 Sonnet & Gemini 3.1 Pro (LLM-assisted development)
 
 ## License
 
