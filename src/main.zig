@@ -20,6 +20,8 @@ pub fn main() uefi.Status {
 
     _ = con_out.reset(false) catch {};
 
+    CatalystKernel.Serial.init();
+
     const msg = std.unicode.utf8ToUtf16LeStringLiteral("Zig-Python Kernel Online\r\n");
     _ = con_out.outputString(msg) catch {};
 

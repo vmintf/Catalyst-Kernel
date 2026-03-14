@@ -19,18 +19,19 @@ build:
 
 iso: build
 	xorriso -as mkisofs \
-		-o $(ISO) \
-		-eltorito-alt-boot \
-		-e EFI/BOOT/efi.img \
-		-no-emul-boot \
-		-isohybrid-gpt-basdat \
-		iso_root
+	   -o $(ISO) \
+	   -eltorito-alt-boot \
+	   -e EFI/BOOT/efi.img \
+	   -no-emul-boot \
+	   -isohybrid-gpt-basdat \
+	   iso_root
 
 run: iso
 	qemu-system-x86_64 \
-		-bios $(OVMF) \
-		-cdrom $(ISO) \
-		-nographic
+	   -bios $(OVMF) \
+	   -cdrom $(ISO) \
+	   -display none \
+	   -serial stdio
 
 clean:
 	rm -rf iso_root zig-out $(ISO) .zig-cache /tmp/zig-cache /tmp/zig-global-cache

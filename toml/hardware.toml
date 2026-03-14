@@ -1,15 +1,21 @@
 [ir]
-version = "1.0"
+version = "1.1"
 
 [opcodes]
 literal      = 0x01
 write_serial = 0x10
 add_u32      = 0x30
 sub_u32      = 0x31
+mul_u32      = 0x32
+div_u32      = 0x33
+mod_u32      = 0x34
 mem_write    = 0x40
 mem_read     = 0x41
 loop         = 0x50
 jmp          = 0x51
+jmp_if_zero  = 0x52
+jmp_if_eq    = 0x53
+jmp_if_lt    = 0x54
 halt         = 0xFF
 
 [devices]
