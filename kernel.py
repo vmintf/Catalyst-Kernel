@@ -21,23 +21,38 @@ with open("toml/hardware.toml", "rb") as f:
 
 OPCODES = hw["opcodes"]
 DEVICES = hw["devices"]
+PORTS   = hw["ports"]
 
-# Opcode constants – bound dynamically from hardware.toml so that the single
+# Command definitions - source of truth for the shell dispatcher.
+with open("toml/commands.toml", "rb") as f:
+    COMMANDS = tomllib.load(f)["commands"]
+
+# Opcode constants - bound dynamically from hardware.toml so that the single
 # source of truth remains the TOML file.
 OP_LITERAL      = OPCODES["literal"]
 OP_WRITE_SERIAL = OPCODES["write_serial"]
+OP_WRITE_STR     = OPCODES["write_str"]
+OP_WRITE_CONSOLE = OPCODES["write_console"]
+OP_WRITE_CON_STR = OPCODES["write_con_str"]
 OP_ADD_U32      = OPCODES["add_u32"]
 OP_SUB_U32      = OPCODES["sub_u32"]
 OP_MUL_U32      = OPCODES["mul_u32"]
 OP_DIV_U32      = OPCODES["div_u32"]
 OP_MOD_U32      = OPCODES["mod_u32"]
+OP_CMP_EQ       = OPCODES["cmp_eq"]
+OP_CMP_LT       = OPCODES["cmp_lt"]
+OP_CMP_GT       = OPCODES["cmp_gt"]
 OP_MEM_WRITE    = OPCODES["mem_write"]
 OP_MEM_READ     = OPCODES["mem_read"]
+OP_READ_PORT    = OPCODES["read_port"]
+OP_MEM_INDEX    = OPCODES["mem_index"]
 OP_LOOP         = OPCODES["loop"]
 OP_JMP          = OPCODES["jmp"]
 OP_JMP_IF_ZERO  = OPCODES["jmp_if_zero"]
 OP_JMP_IF_EQ    = OPCODES["jmp_if_eq"]
 OP_JMP_IF_LT    = OPCODES["jmp_if_lt"]
+OP_POLL_KEY     = OPCODES["poll_key"]
+OP_READ_LINE    = OPCODES["read_line"]
 OP_HALT         = OPCODES["halt"]
 
 # Size of the i32 offset field appended to every jump instruction.
@@ -77,8 +92,53 @@ class u32:
     def __mod__(self, other: "u32") -> IRNode:
         return IRNode(OP_MOD_U32, [self, other])
 
+    def __eq__(self, other: "u32") -> IRNode:  # type: ignore[override]
+        return IRNode(OP_CMP_EQ, [self, other])
 
-class mem_write:  # noqa: N801 – intentionally lowercase for DSL ergonomics
+    def __lt__(self, other: "u32") -> IRNode:
+        return IRNode(OP_CMP_LT, [self, other])
+
+    def __gt__(self, other: "u32") -> IRNode:
+        return IRNode(OP_CMP_GT, [self, other])
+
+
+
+class write_str_ir:  # noqa: N801
+    """Emit a WRITE_STR instruction: write a raw ASCII string to serial at runtime.
+
+    Encoding: [write_str] [length: u16 LE] [bytes...]
+
+    Unlike repeated write_serial nodes, this is handled entirely at runtime by
+    the Zig interpreter and does not consume any comptime branch quota.
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class write_console_ir:  # noqa: N801
+    """Emit a WRITE_CONSOLE instruction: write a single byte to the UEFI console.
+
+    Encoding: [write_console] [value node bytes]
+    """
+
+    def __init__(self, value):
+        self.value = value
+
+
+class write_con_str_ir:  # noqa: N801
+    """Emit a WRITE_CON_STR instruction: write an ASCII string to the UEFI console.
+
+    Encoding: [write_con_str] [length: u16 LE] [bytes...]
+
+    The Zig runtime converts each byte to UTF-16LE before passing it to
+    con_out.outputString.
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+
+class mem_write:  # noqa: N801 - intentionally lowercase for DSL ergonomics
     """Emit a MEM_WRITE instruction: store *value* at *addr*."""
 
     def __init__(self, addr: int, value: u32):
@@ -92,6 +152,35 @@ class mem_read:  # noqa: N801
     def __init__(self, addr: int):
         self.addr = addr
 
+
+class read_port_ir:  # noqa: N801
+    """Emit a READ_PORT instruction: runtime inb from *port* (u16).
+
+    As an expression node, the byte read from the port is returned as a u8
+    result, allowing it to be composed with cmp_* and jmp_if_zero:
+
+        slot = kernel.emit_jmp_if_zero(read_port_ir(PORTS["ps2_data"]))
+
+    As a standalone statement the byte is echoed to serial by the Zig runtime.
+    """
+
+    def __init__(self, port: int):
+        self.port = port & 0xFFFF
+
+
+
+class mem_index_ir:  # noqa: N801
+    """Emit a MEM_INDEX instruction: read line_buf[index] as an expression value.
+
+    Encoding: [mem_index] [base_addr: u32 LE] [index node bytes]
+
+    base_addr=0 reads from the global line_buf written by read_line.
+    The result is a u8 that can be composed with cmp_* and jmp_if_zero.
+    """
+
+    def __init__(self, index, base_addr: int = 0):
+        self.index = index
+        self.base_addr = base_addr
 
 class loop_ir:
     """OP_LOOP: repeat *body* IR nodes exactly *count* times."""
@@ -149,6 +238,31 @@ class jmp_if_lt_ir:
         self.offset = offset
 
 
+class poll_key_ir:
+    """OP_POLL_KEY: block until a printable PS/2 key is pressed, echo to serial.
+
+    No operands.  The Zig runtime spins on port 0x60/0x64 until a printable
+    ASCII make-code arrives, then writes it to COM1.
+    """
+
+class read_line_ir:
+    """OP_READ_LINE: read a line of input from the UEFI console into an internal
+    buffer, echoing each character as it is typed.  Backspace erases the last
+    character.  The line is committed when Enter is pressed.
+
+    Encoding: [read_line] [buf_addr: u32 LE] [max_len: u16 LE]
+
+    The Zig runtime writes the null-terminated result into the IR memory region
+    at *buf_addr* (relative to the ir_data base pointer is NOT used here -
+    buf_addr is an absolute address in the kernel's static buffer).
+    For simplicity, buf_addr=0 uses the runtime's internal scratch buffer.
+    """
+
+    def __init__(self, buf_addr: int = 0, max_len: int = 128):
+        self.buf_addr = buf_addr
+        self.max_len = max_len
+
+
 # ---------------------------------------------------------------------------
 # Kernel decorator / IR compiler
 # ---------------------------------------------------------------------------
@@ -162,14 +276,25 @@ class KernelDecorator:
     temporarily set to zero.  The method returns the byte index of that
     placeholder so it can be back-patched later:
 
-        slot = kernel.emit_jmp_if_zero(value_node)
+        slot = kernel.emit_jmp_if_zero(cmp_node)
         kernel._serialize(skipped_instruction)
         kernel.patch_jmp(slot)   # fills in the correct forward offset
 
     patch_jmp computes the distance from the end of the offset field
     (i.e. the start of the next instruction after the jump) to the current
-    end of the buffer, then writes it into the placeholder as a little-endian
-    i32.  This matches the Zig interpreter's PC arithmetic exactly.
+    end of the buffer, then writes it as a little-endian i32.
+
+    cmp + jmp_if_zero idioms
+    ------------------------
+    Since cmp_* returns 0 or 1, combining with jmp_if_zero gives readable
+    conditional patterns without a dedicated jmp_if_neq etc.:
+
+        # Jump when a == b  ->  cmp_eq returns 1, jmp_if_zero NOT taken
+        # Jump when a != b  ->  cmp_eq returns 0, jmp_if_zero IS  taken
+        slot = kernel.emit_jmp_if_zero(u32(a) == u32(b))
+
+        # Jump when a >= b  ->  cmp_lt returns 0, jmp_if_zero IS  taken
+        slot = kernel.emit_jmp_if_zero(u32(a) < u32(b))
     """
 
     def __init__(self):
@@ -215,20 +340,33 @@ class KernelDecorator:
     def patch_jmp(self, slot: int) -> None:
         """Back-patch the i32 offset placeholder written at *slot*.
 
-        *slot* must be the byte index returned by one of the emit_jmp_*
-        methods.  The offset is computed as the distance from the byte
-        immediately after the 4-byte offset field to the current end of the
-        buffer, which is exactly where the next instruction will be written.
+        The offset is the distance from the byte immediately after the 4-byte
+        field to the current end of the buffer (the next instruction site).
 
         Raises ValueError when the computed offset would overflow i32.
         """
-        # PC after consuming the offset field = slot + _JMP_OFFSET_SIZE.
-        # Jump target = current end of buffer (next instruction to be emitted).
         offset = len(self.ir_buffer) - (slot + _JMP_OFFSET_SIZE)
         if not (-2**31 <= offset <= 2**31 - 1):
             raise ValueError(
                 f"patch_jmp: offset {offset} does not fit in i32 "
                 f"(slot={slot}, buffer length={len(self.ir_buffer)})"
+            )
+        struct.pack_into("<i", self.ir_buffer, slot, offset)
+
+    def patch_jmp_back(self, slot: int, target: int) -> None:
+        """Back-patch *slot* to jump backward to *target*.
+
+        *target* must be a label returned by label() before the jump was
+        emitted.  The offset is computed so that after the Zig interpreter
+        consumes the 4-byte field, PC lands exactly on *target*.
+
+        Raises ValueError when the computed offset would overflow i32.
+        """
+        offset = target - (slot + _JMP_OFFSET_SIZE)
+        if not (-2**31 <= offset <= 2**31 - 1):
+            raise ValueError(
+                f"patch_jmp_back: offset {offset} does not fit in i32 "
+                f"(slot={slot}, target={target})"
             )
         struct.pack_into("<i", self.ir_buffer, slot, offset)
 
@@ -239,8 +377,8 @@ class KernelDecorator:
         return slot
 
     # ------------------------------------------------------------------
-    # Emit helpers – write a jump opcode + operands + placeholder offset.
-    # Each returns the slot index so the caller can call patch_jmp later.
+    # Emit helpers - write opcode + operands + placeholder offset.
+    # Each returns the slot index for a subsequent patch_jmp call.
     # ------------------------------------------------------------------
 
     def emit_jmp(self, offset: int = 0) -> int:
@@ -252,7 +390,11 @@ class KernelDecorator:
         return slot
 
     def emit_jmp_if_zero(self, value, offset: int = 0) -> int:
-        """Emit JMP_IF_ZERO with *value* operand; return the offset slot."""
+        """Emit JMP_IF_ZERO with *value* operand; return the offset slot.
+
+        *value* may be any serialisable node, including cmp_* IRNodes and
+        read_port_ir instances.
+        """
         self.ir_buffer.append(OP_JMP_IF_ZERO)
         self._serialize(value)
         slot = self._alloc_offset_placeholder()
@@ -288,15 +430,32 @@ class KernelDecorator:
         """Recursively serialise an IR node tree into *self.ir_buffer*."""
 
         if isinstance(node, u32):
-            # LITERAL opcode: 1-byte value only (fits in u8 for serial output).
             self.ir_buffer.append(OP_LITERAL)
             self.ir_buffer.append(node.value & 0xFF)
 
         elif isinstance(node, IRNode):
-            # Generic binary / unary expression node.
             self.ir_buffer.append(node.op)
             for arg in node.args:
                 self._serialize(arg)
+
+        elif isinstance(node, write_str_ir):
+            # Encoding: [write_str] [length: u16 LE] [bytes...]
+            encoded = node.text.encode("ascii")
+            self.ir_buffer.append(OP_WRITE_STR)
+            self.ir_buffer += struct.pack("<H", len(encoded))
+            self.ir_buffer += encoded
+
+        elif isinstance(node, write_console_ir):
+            # Encoding: [write_console] [value node bytes]
+            self.ir_buffer.append(OP_WRITE_CONSOLE)
+            self._serialize(node.value)
+
+        elif isinstance(node, write_con_str_ir):
+            # Encoding: [write_con_str] [length: u16 LE] [bytes...]
+            encoded = node.text.encode("ascii")
+            self.ir_buffer.append(OP_WRITE_CON_STR)
+            self.ir_buffer += struct.pack("<H", len(encoded))
+            self.ir_buffer += encoded
 
         elif isinstance(node, mem_write):
             self.ir_buffer.append(OP_MEM_WRITE)
@@ -307,10 +466,20 @@ class KernelDecorator:
             self.ir_buffer.append(OP_MEM_READ)
             self.ir_buffer += struct.pack("<I", node.addr)
 
+        elif isinstance(node, read_port_ir):
+            # Encoding: [read_port] [port: u16 LE]
+            self.ir_buffer.append(OP_READ_PORT)
+            self.ir_buffer += struct.pack("<H", node.port)
+
+        elif isinstance(node, mem_index_ir):
+            # Encoding: [mem_index] [base_addr: u32 LE] [index node bytes]
+            self.ir_buffer.append(OP_MEM_INDEX)
+            self.ir_buffer += struct.pack("<I", node.base_addr)
+            self._serialize(node.index)
+
         elif isinstance(node, loop_ir):
             self.ir_buffer.append(OP_LOOP)
             self.ir_buffer += struct.pack("<I", node.count)
-            # Serialise body into a temporary buffer so we can prefix its length.
             body_buf = bytearray()
             for item in node.body:
                 saved = self.ir_buffer
@@ -325,10 +494,20 @@ class KernelDecorator:
             self.ir_buffer.append(OP_JMP)
             self.ir_buffer += struct.pack("<i", node.offset)
 
+        elif isinstance(node, poll_key_ir):
+            self.ir_buffer.append(OP_POLL_KEY)
+
+        elif isinstance(node, read_line_ir):
+            # Encoding: [read_line] [buf_addr: u32 LE] [max_len: u16 LE]
+            self.ir_buffer.append(OP_READ_LINE)
+            self.ir_buffer += struct.pack("<I", node.buf_addr)
+            self.ir_buffer += struct.pack("<H", node.max_len)
+
+
         elif isinstance(node, jmp_if_zero_ir):
             if node.offset is None:
                 raise ValueError(
-                    "jmp_if_zero_ir.offset is None – use kernel.emit_jmp_if_zero() "
+                    "jmp_if_zero_ir.offset is None - use kernel.emit_jmp_if_zero() "
                     "with kernel.patch_jmp() instead."
                 )
             self.ir_buffer.append(OP_JMP_IF_ZERO)
@@ -338,7 +517,7 @@ class KernelDecorator:
         elif isinstance(node, jmp_if_eq_ir):
             if node.offset is None:
                 raise ValueError(
-                    "jmp_if_eq_ir.offset is None – use kernel.emit_jmp_if_eq() "
+                    "jmp_if_eq_ir.offset is None - use kernel.emit_jmp_if_eq() "
                     "with kernel.patch_jmp() instead."
                 )
             self.ir_buffer.append(OP_JMP_IF_EQ)
@@ -349,7 +528,7 @@ class KernelDecorator:
         elif isinstance(node, jmp_if_lt_ir):
             if node.offset is None:
                 raise ValueError(
-                    "jmp_if_lt_ir.offset is None – use kernel.emit_jmp_if_lt() "
+                    "jmp_if_lt_ir.offset is None - use kernel.emit_jmp_if_lt() "
                     "with kernel.patch_jmp() instead."
                 )
             self.ir_buffer.append(OP_JMP_IF_LT)
@@ -378,67 +557,173 @@ def write_serial(value: u32): ...
 def write_vga(value: u32): ...
 
 
+
 # ---------------------------------------------------------------------------
-# Kernel IR program (AOT static graph)
+# Shell compiler
+#
+# emit_strcmp_token emits runtime byte comparisons using mem_index_ir.
+# ShellCompiler wires up: prompt -> read_line -> dispatch -> loop.
 # ---------------------------------------------------------------------------
 
-@kernel
-def calc_and_print(a: u32):
-    # 0x41 ('A') + 5 = 0x46 ('F')
-    return a + u32(5)
+_SHELL_INPUT_MAX = 128
 
+
+def emit_strcmp_token(kernel_obj, cmd_name: str) -> list:
+    """Emit IR that compares the first token of line_buf against cmd_name.
+
+    For each character at position i, emit:
+        jmp_if_zero(cmp_eq(mem_index(i), literal(expected)))  ->  mismatch
+
+    After all characters match, also verify the token boundary:
+        line_buf[n] must be space or null.
+
+    Returns a list of forward-jump slots to patch on mismatch.
+    """
+    encoded = cmd_name.encode("ascii")
+    mismatch_slots = []
+
+    # Per-character comparison
+    for i, expected in enumerate(encoded):
+        cmp_node = mem_index_ir(u32(i)) == u32(expected)
+        slot = kernel_obj.emit_jmp_if_zero(cmp_node)
+        mismatch_slots.append(slot)
+
+    # Token boundary: buf[n] == ' ' OR buf[n] == 0
+    # No OR opcode, so use add: (cmp_eq(space) + cmp_eq(null)) == 0 means mismatch
+    boundary = IRNode(
+        OP_ADD_U32,
+        [
+            mem_index_ir(u32(len(encoded))) == u32(ord(' ')),
+            mem_index_ir(u32(len(encoded))) == u32(0),
+            ]
+    )
+    slot = kernel_obj.emit_jmp_if_zero(boundary)
+    mismatch_slots.append(slot)
+
+    return mismatch_slots
+
+
+class ShellCompiler:
+    """Compiles commands.toml into a shell dispatch loop in the IR buffer."""
+
+    def __init__(self, kernel_obj, commands: dict):
+        self._kernel   = kernel_obj
+        self._commands = commands
+        self._handlers = {}
+
+    def command(self, name: str):
+        """Decorator: register fn as the IR emitter for command name."""
+        def decorator(fn):
+            self._handlers[name] = fn
+            return fn
+        return decorator
+
+    def compile(self) -> None:
+        """Emit the full shell loop.
+
+        Structure per iteration:
+            loop_start:
+                write_con_str("> ")
+                read_line()
+                write_con_str("\r\n")
+                for each command:
+                    strcmp_token  ->  mismatch: skip to next command
+                    handler IR
+                    jmp end_dispatch
+                unknown command fallback
+                jmp loop_start
+            end_dispatch: <- patched by each successful match
+        """
+        loop_start = self._kernel.label()
+
+        # Prompt
+        self._kernel._serialize(write_con_str_ir("> "))
+        self._kernel._serialize(write_str_ir("> "))
+
+        # Read input into global line_buf
+        self._kernel._serialize(read_line_ir(max_len=_SHELL_INPUT_MAX))
+
+        # Newline after input
+        self._kernel._serialize(write_con_str_ir("\r\n"))
+        self._kernel._serialize(write_str_ir("\r\n"))
+
+        end_slots = []
+
+        for name, meta in self._commands.items():
+            handler = self._handlers.get(name)
+            if handler is None:
+                continue
+
+            # Emit strcmp; on mismatch jump past this handler
+            mismatch_slots = emit_strcmp_token(self._kernel, name)
+
+            # Match: emit handler body
+            handler()
+
+            # After handler, jump to end of dispatch table
+            end_slot = self._kernel.emit_jmp()
+            end_slots.append(end_slot)
+
+            # Patch all mismatch jumps to land here (start of next command)
+            for slot in mismatch_slots:
+                self._kernel.patch_jmp(slot)
+
+        # Unknown command fallback
+        self._kernel._serialize(write_con_str_ir("Unknown command\r\n"))
+        self._kernel._serialize(write_str_ir("Unknown command\r\n"))
+
+        # Patch all end-of-dispatch jumps to land here
+        for slot in end_slots:
+            self._kernel.patch_jmp(slot)
+
+        # Loop back to prompt
+        back_slot = self._kernel.emit_jmp()
+        self._kernel.patch_jmp_back(back_slot, loop_start)
 
 if __name__ == "__main__":
-    # --- arithmetic demos ---------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # Boot banner
+    # ---------------------------------------------------------------------------
 
-    # Static calc: emits 'F' (0x41 + 0x05)
-    calc_and_print(u32(0x41))
+    kernel._serialize(write_con_str_ir("Catalyst Kernel\r\n"))
+    kernel._serialize(write_str_ir("Catalyst Kernel\r\n"))
 
-    # Direct device write: emits 'G' (0x47)
-    write_serial(u32(0x47))
+    # ---------------------------------------------------------------------------
+    # Shell command handlers
+    # ---------------------------------------------------------------------------
 
-    # MUL: 0x06 * 0x0B = 0x42 ('B')
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x06) * u32(0x0B)]))
+    shell = ShellCompiler(kernel, COMMANDS)
 
-    # DIV: 0x84 // 0x02 = 0x42 ('B')
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x84) // u32(0x02)]))
+    @shell.command("help")
+    def cmd_help():
+        # Print each command name and description from commands.toml.
+        for name, meta in COMMANDS.items():
+            line = f"  {name:<12}{meta['description']}\r\n"
+            kernel._serialize(write_con_str_ir(line))
+            kernel._serialize(write_str_ir(line))
 
-    # MOD: 0x45 % 0x03 = 0x00 (non-printable)
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x45) % u32(0x03)]))
+    @shell.command("echo")
+    def cmd_echo():
+        # For now echo a fixed string; runtime arg parsing comes later.
+        kernel._serialize(write_con_str_ir("[echo]\r\n"))
+        kernel._serialize(write_str_ir("[echo]\r\n"))
 
-    # --- loop demo ----------------------------------------------------------
+    @shell.command("clear")
+    def cmd_clear():
+        # ANSI escape: clear screen + move cursor to top-left.
+        kernel._serialize(write_con_str_ir("\x1B[2J\x1B[H"))
+        kernel._serialize(write_str_ir("\x1B[2J\x1B[H"))
 
-    # Loop: emit 'A' three times
-    kernel._serialize(loop_ir(3, [
-        IRNode(OP_WRITE_SERIAL, [u32(0x41)])
-    ]))
+    @shell.command("version")
+    def cmd_version():
+        kernel._serialize(write_con_str_ir("Catalyst Kernel v0.1.0\r\n"))
+        kernel._serialize(write_str_ir("Catalyst Kernel v0.1.0\r\n"))
 
-    # --- conditional jump demos (label/patch) --------------------------------
-    #
-    # Pattern:
-    #   slot = kernel.emit_jmp_*(...) # placeholder offset written as 0x00000000
-    #   kernel._serialize(skipped)    # instruction(s) to skip when jump taken
-    #   kernel.patch_jmp(slot)        # auto-computes and writes the correct offset
-    #   kernel._serialize(target)     # instruction at the landing site
+    # ---------------------------------------------------------------------------
+    # Compile shell dispatch loop into IR
+    # ---------------------------------------------------------------------------
 
-    # JMP_IF_ZERO: 0x48 % 0x02 == 0 → skip 'X', emit 'H'
-    slot = kernel.emit_jmp_if_zero(u32(0x48) % u32(0x02))
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x58)]))  # 'X' – skipped
-    kernel.patch_jmp(slot)
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x48)]))  # 'H'
+    shell.compile()
 
-    # JMP_IF_EQ: 0x02 == 0x02 → skip 'X', emit 'E'
-    slot = kernel.emit_jmp_if_eq(u32(0x02), u32(0x02))
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x58)]))  # 'X' – skipped
-    kernel.patch_jmp(slot)
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x45)]))  # 'E'
-
-    # JMP_IF_LT: 0x01 < 0x02 → skip 'X', emit 'L'
-    slot = kernel.emit_jmp_if_lt(u32(0x01), u32(0x02))
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x58)]))  # 'X' – skipped
-    kernel.patch_jmp(slot)
-    kernel._serialize(IRNode(OP_WRITE_SERIAL, [u32(0x4C)]))  # 'L'
-
-    # --- halt ---------------------------------------------------------------
     kernel.ir_buffer.append(OP_HALT)
     kernel.save()

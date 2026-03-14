@@ -22,7 +22,7 @@ pub fn main() uefi.Status {
 
     CatalystKernel.Serial.init();
 
-    const msg = std.unicode.utf8ToUtf16LeStringLiteral("Zig-Python Kernel Online\r\n");
+    const msg = std.unicode.utf8ToUtf16LeStringLiteral("Initializing kernel...\r\n");
     _ = con_out.outputString(msg) catch {};
 
     // Browse CD-ROM Explorer at the time where the boot_service

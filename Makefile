@@ -30,7 +30,8 @@ run: iso
 	qemu-system-x86_64 \
 	   -bios $(OVMF) \
 	   -cdrom $(ISO) \
-	   -display none \
+	   -machine q35 \
+	   -display gtk \
 	   -serial stdio
 
 clean:

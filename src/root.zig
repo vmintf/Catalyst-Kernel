@@ -15,21 +15,35 @@ const BlockIo = uefi.protocol.BlockIo;
 pub const OpCode = enum(u8) {
     literal      = 0x01,
     write_serial = 0x10,
+    write_str     = 0x11, // runtime string write; no comptime branch cost
+    write_console = 0x12, // write single byte to UEFI con_out
+    write_con_str = 0x13, // write ASCII string to UEFI con_out
     add_u32      = 0x30,
     sub_u32      = 0x31,
     mul_u32      = 0x32,
     div_u32      = 0x33,
     mod_u32      = 0x34,
+    cmp_eq       = 0x35, // 1 if left == right, else 0
+    cmp_lt       = 0x36, // 1 if left <  right, else 0
+    cmp_gt       = 0x37, // 1 if left >  right, else 0
     mem_write    = 0x40,
     mem_read     = 0x41,
+    read_port    = 0x42, // runtime inb; result used as expression value
+    mem_index    = 0x43, // read byte at base_addr + index expression
     loop         = 0x50,
     jmp          = 0x51,
     jmp_if_zero  = 0x52,
     jmp_if_eq    = 0x53,
     jmp_if_lt    = 0x54,
+    poll_key     = 0x60, // block until a key is pressed, echo to serial + console
+    read_line    = 0x61, // read a line until Enter, echo chars, handle backspace
     halt         = 0xff,
     _,
 };
+
+// ---------------------------------------------------------------------------
+// Serial (COM1, 0x3F8, 115200 8N1)
+// ---------------------------------------------------------------------------
 
 pub const Serial = struct {
     const PORT: u16 = 0x3F8;
@@ -68,78 +82,208 @@ pub const Serial = struct {
     }
 };
 
+
 // ---------------------------------------------------------------------------
-// Expression evaluator (runs at comptime, returns a u8 result)
+// Global line buffer – accessible from IR via read_line's buf_addr field.
+// The kernel exposes a single 256-byte scratch buffer at a fixed address.
 // ---------------------------------------------------------------------------
 
-fn evaluate_ir(comptime ir: []const u8, comptime pc: *usize) u8 {
-    const op = @as(OpCode, @enumFromInt(ir[pc.*]));
+pub var line_buf: [256]u8 = undefined;
+pub var line_len: usize   = 0;
+
+// ---------------------------------------------------------------------------
+// Console (UEFI Simple Text Output)
+// ---------------------------------------------------------------------------
+
+pub const Console = struct {
+    /// Write a single ASCII byte to the UEFI con_out.
+    /// Converts to a null-terminated UTF-16LE buffer on the stack.
+    pub fn write_byte(ch: u8) void {
+        const con_out = uefi.system_table.con_out orelse return;
+        // Stack buffer: [char, null-terminator] in UTF-16LE (2 bytes each).
+        var buf = [_:0]u16{ ch };
+        _ = con_out.outputString(&buf) catch {};
+    }
+
+    /// Write a slice of ASCII bytes to the UEFI con_out one character at a time.
+    pub fn write_str(s: []const u8) void {
+        for (s) |ch| {
+            write_byte(ch);
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Keyboard – UEFI Simple Text Input Protocol
+//
+// Using UEFI con_in instead of direct PS/2 port I/O avoids firmware and
+// chipset compatibility issues across different QEMU machine types.
+// ---------------------------------------------------------------------------
+
+pub const Keyboard = struct {
+    /// Block until a printable key is pressed via UEFI con_in.
+    /// Returns the ASCII byte of the pressed key (guaranteed non-zero).
+    pub fn read_ascii() u8 {
+        const con_in = uefi.system_table.con_in orelse return 0;
+        const bs     = uefi.system_table.boot_services orelse return 0;
+
+        // Create a single-event wait array for WaitForEvent.
+        var events = [_]uefi.Event{con_in.wait_for_key};
+
+        while (true) {
+            // Block until the key event fires.
+            _ = bs.waitForEvent(&events) catch continue;
+
+            // readKeyStroke returns Key.Input directly (0.15.x API).
+            const key = con_in.readKeyStroke() catch continue;
+
+            // unicode_char holds the printable character; scan_code is for
+            // special keys (arrows, F-keys, etc.) which we ignore for now.
+            const ch: u8 = @truncate(key.unicode_char);
+            if (ch >= 0x20 and ch <= 0x7E) return ch; // printable ASCII range
+            if (ch == 0x08 or ch == 0x7F) return 0x08;  // backspace + DEL → unified as BS
+            if (ch == '\r') return '\n';                // normalise Enter
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Expression evaluator (runtime)
+//
+// Reads opcodes from *ir* starting at *pc and returns a u8 result.
+// cmp_* opcodes return 0 or 1.  pc is advanced past all consumed bytes.
+// ---------------------------------------------------------------------------
+
+fn evaluate_ir(ir: []const u8, pc: *usize) u8 {
+    const op: OpCode = @enumFromInt(ir[pc.*]);
     pc.* += 1;
 
-    return switch (op) {
-        .literal => blk: {
+    switch (op) {
+        .literal => {
             const val = ir[pc.*];
             pc.* += 1;
-            break :blk val;
+            return val;
         },
-
-        .add_u32 => blk: {
+        .add_u32 => {
             const left  = evaluate_ir(ir, pc);
             const right = evaluate_ir(ir, pc);
-            break :blk left +% right;
+            return left +% right;
         },
-
-        .sub_u32 => blk: {
+        .sub_u32 => {
             const left  = evaluate_ir(ir, pc);
             const right = evaluate_ir(ir, pc);
-            break :blk left -% right;
+            return left -% right;
         },
-
-        .mul_u32 => blk: {
+        .mul_u32 => {
             const left  = evaluate_ir(ir, pc);
             const right = evaluate_ir(ir, pc);
-            break :blk left *% right;
+            return left *% right;
         },
-
-        .div_u32 => blk: {
+        .div_u32 => {
             const left  = evaluate_ir(ir, pc);
             const right = evaluate_ir(ir, pc);
-            // Trap division-by-zero at compile time.
-            if (right == 0) @compileError("IR div_u32: division by zero");
-            break :blk left / right;
+            if (right == 0) return 0; // runtime: treat div-by-zero as 0
+            return left / right;
         },
-
-        .mod_u32 => blk: {
+        .mod_u32 => {
             const left  = evaluate_ir(ir, pc);
             const right = evaluate_ir(ir, pc);
-            if (right == 0) @compileError("IR mod_u32: modulo by zero");
-            break :blk left % right;
+            if (right == 0) return 0;
+            return left % right;
+        },
+        .cmp_eq => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return if (left == right) 1 else 0;
+        },
+        .cmp_lt => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return if (left < right) 1 else 0;
+        },
+        .cmp_gt => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return if (left > right) 1 else 0;
+        },
+        .mem_index => {
+            // Encoding: [mem_index] [base_addr: u32 LE] [index node bytes]
+            // Reads one byte from the global line_buf at position *index*.
+            // base_addr is reserved for future use (0 = line_buf).
+            const base = std.mem.readInt(u32, ir[pc.*..][0..4], .little);
+            pc.* += 4;
+            const idx = evaluate_ir(ir, pc);
+            _ = base; // reserved – currently always reads from line_buf
+            if (idx < line_buf.len) return line_buf[idx];
+            return 0;
         },
 
-        else => @panic("unknown opcode in expression context"),
-    };
+        else => return 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Top-level IR executor (comptime statement dispatch)
+// Top-level IR executor (runtime)
 // ---------------------------------------------------------------------------
 
-pub fn execute_python_ir(comptime ir_data: []const u8) void {
-    comptime var pc: usize = 0;
-    @setEvalBranchQuota(100_000);
+pub fn execute_python_ir(ir_data: []const u8) void {
+    var pc: usize = 0;
 
-    inline while (pc < ir_data.len) {
-        const op = @as(OpCode, @enumFromInt(ir_data[pc]));
+    while (pc < ir_data.len) {
+        const op: OpCode = @enumFromInt(ir_data[pc]);
         switch (op) {
 
         // ----------------------------------------------------------------
-        // I/O
+        // I/O – serial write (single byte expression)
         // ----------------------------------------------------------------
 
             .write_serial => {
                 pc += 1;
-                const val = comptime evaluate_ir(ir_data, &pc);
+                const val = evaluate_ir(ir_data, &pc);
                 Serial.write(val);
+            },
+
+            // ----------------------------------------------------------------
+            // I/O – serial write string (runtime, no comptime branch cost)
+            //
+            // Encoding: [write_str] [length: u16 LE] [bytes...]
+            // ----------------------------------------------------------------
+
+            .write_str => {
+                pc += 1;
+                const len = std.mem.readInt(u16, ir_data[pc..][0..2], .little);
+                pc += 2;
+                for (ir_data[pc..pc + len]) |byte| {
+                    Serial.write(byte);
+                }
+                pc += len;
+            },
+
+
+            // ----------------------------------------------------------------
+            // I/O – UEFI console write (single byte)
+            //
+            // Encoding: [write_console] [value node bytes]
+            // ----------------------------------------------------------------
+
+            .write_console => {
+                pc += 1;
+                const val = evaluate_ir(ir_data, &pc);
+                Console.write_byte(val);
+            },
+
+            // ----------------------------------------------------------------
+            // I/O – UEFI console write string
+            //
+            // Encoding: [write_con_str] [length: u16 LE] [bytes...]
+            // ----------------------------------------------------------------
+
+            .write_con_str => {
+                pc += 1;
+                const len = std.mem.readInt(u16, ir_data[pc..][0..2], .little);
+                pc += 2;
+                Console.write_str(ir_data[pc..pc + len]);
+                pc += len;
             },
 
             // ----------------------------------------------------------------
@@ -148,31 +292,50 @@ pub fn execute_python_ir(comptime ir_data: []const u8) void {
 
             .mem_write => {
                 pc += 1;
-                const addr = comptime std.mem.readInt(u32, ir_data[pc..pc + 4], .little);
+                const addr = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
                 pc += 4;
-                const val = comptime evaluate_ir(ir_data, &pc);
+                const val = evaluate_ir(ir_data, &pc);
                 @as(*volatile u8, @ptrFromInt(addr)).* = val;
             },
 
             .mem_read => {
                 pc += 1;
-                const addr = comptime std.mem.readInt(u32, ir_data[pc..pc + 4], .little);
+                const addr = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
                 pc += 4;
                 _ = @as(*volatile u8, @ptrFromInt(addr)).*;
             },
 
             // ----------------------------------------------------------------
+            // I/O – runtime port read
+            //
+            // Encoding: [read_port] [port: u16 LE]
+            // ----------------------------------------------------------------
+
+            .read_port => {
+                pc += 1;
+                const port = std.mem.readInt(u16, ir_data[pc..][0..2], .little);
+                pc += 2;
+                const val = asm volatile ("inb %[port], %[ret]"
+                    : [ret] "={al}" (-> u8)
+                    : [port] "{dx}" (@as(u16, port))
+                );
+                Serial.write(val);
+            },
+
+            // ----------------------------------------------------------------
             // Control flow – loop
+            //
+            // Encoding: [loop] [count: u32 LE] [body_len: u32 LE] [body...]
             // ----------------------------------------------------------------
 
             .loop => {
                 pc += 1;
-                const count    = comptime std.mem.readInt(u32, ir_data[pc..pc + 4], .little);
+                const count    = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
                 pc += 4;
-                const body_len = comptime std.mem.readInt(u32, ir_data[pc..pc + 4], .little);
+                const body_len = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
                 pc += 4;
-                comptime var i: u32 = 0;
-                inline while (i < count) : (i += 1) {
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
                     execute_python_ir(ir_data[pc..pc + body_len]);
                 }
                 pc += body_len;
@@ -184,28 +347,19 @@ pub fn execute_python_ir(comptime ir_data: []const u8) void {
 
             .jmp => {
                 pc += 1;
-                // Offset is relative to the byte immediately after the field.
-                const offset = comptime std.mem.readInt(i32, ir_data[pc..pc + 4], .little);
+                const offset = std.mem.readInt(i32, ir_data[pc..][0..4], .little);
                 pc += 4;
                 pc = @intCast(@as(i64, @intCast(pc)) + offset);
             },
 
             // ----------------------------------------------------------------
             // Control flow – conditional jumps
-            //
-            // Encoding for all three variants:
-            //   [opcode] [operand(s) – variable length] [offset: i32 LE]
-            //
-            // The signed offset is relative to the byte immediately after the
-            // 4-byte offset field (i.e. the start of the next instruction).
-            // A positive offset skips forward; a negative offset loops back.
             // ----------------------------------------------------------------
 
             .jmp_if_zero => {
                 pc += 1;
-                // Evaluate the single value operand, then read the offset.
-                const val    = comptime evaluate_ir(ir_data, &pc);
-                const offset = comptime std.mem.readInt(i32, ir_data[pc..pc + 4], .little);
+                const val    = evaluate_ir(ir_data, &pc);
+                const offset = std.mem.readInt(i32, ir_data[pc..][0..4], .little);
                 pc += 4;
                 if (val == 0) {
                     pc = @intCast(@as(i64, @intCast(pc)) + offset);
@@ -214,9 +368,9 @@ pub fn execute_python_ir(comptime ir_data: []const u8) void {
 
             .jmp_if_eq => {
                 pc += 1;
-                const left   = comptime evaluate_ir(ir_data, &pc);
-                const right  = comptime evaluate_ir(ir_data, &pc);
-                const offset = comptime std.mem.readInt(i32, ir_data[pc..pc + 4], .little);
+                const left   = evaluate_ir(ir_data, &pc);
+                const right  = evaluate_ir(ir_data, &pc);
+                const offset = std.mem.readInt(i32, ir_data[pc..][0..4], .little);
                 pc += 4;
                 if (left == right) {
                     pc = @intCast(@as(i64, @intCast(pc)) + offset);
@@ -225,14 +379,76 @@ pub fn execute_python_ir(comptime ir_data: []const u8) void {
 
             .jmp_if_lt => {
                 pc += 1;
-                // Unsigned less-than comparison.
-                const left   = comptime evaluate_ir(ir_data, &pc);
-                const right  = comptime evaluate_ir(ir_data, &pc);
-                const offset = comptime std.mem.readInt(i32, ir_data[pc..pc + 4], .little);
+                const left   = evaluate_ir(ir_data, &pc);
+                const right  = evaluate_ir(ir_data, &pc);
+                const offset = std.mem.readInt(i32, ir_data[pc..][0..4], .little);
                 pc += 4;
                 if (left < right) {
                     pc = @intCast(@as(i64, @intCast(pc)) + offset);
                 }
+            },
+
+            // ----------------------------------------------------------------
+            // Keyboard – poll_key
+            // ----------------------------------------------------------------
+
+            .poll_key => {
+                pc += 1;
+                const ascii = Keyboard.read_ascii();
+                if (ascii != 0) {
+                    Serial.write(ascii);
+                    Console.write_byte(ascii);
+                }
+            },
+
+
+            // ----------------------------------------------------------------
+            // Keyboard – read_line
+            //
+            // Encoding: [read_line] [buf_addr: u32 LE] [max_len: u16 LE]
+            //
+            // Reads characters from UEFI con_in until Enter is pressed,
+            // echoing each printable character to both serial and con_out.
+            // Backspace erases the last character from the display and buffer.
+            // The null-terminated result is written into the kernel's static
+            // scratch buffer (buf_addr=0 uses the internal line_buf).
+            // ----------------------------------------------------------------
+
+            .read_line => {
+                pc += 1;
+                _ = std.mem.readInt(u32, ir_data[pc..][0..4], .little); // buf_addr reserved
+                pc += 4;
+                const max_len = std.mem.readInt(u16, ir_data[pc..][0..2], .little);
+                pc += 2;
+
+                // Write result into the global line_buf.
+                const limit = @min(@as(usize, max_len), line_buf.len - 1);
+                line_len = 0;
+
+                while (true) {
+                    const ch = Keyboard.read_ascii();
+                    if (ch == 0) continue;
+
+                    if (ch == '\n') {
+                        // Enter pressed – commit the line.
+                        break;
+                    } else if (ch == 8) {
+                        // Backspace – erase last character if any.
+                        if (line_len > 0) {
+                            line_len -= 1;
+                            Serial.write(8);
+                            Serial.write(' ');
+                            Serial.write(8);
+                            Console.write_str("\x08 \x08");
+                        }
+                    } else if (line_len < limit) {
+                        line_buf[line_len] = ch;
+                        line_len += 1;
+                        Serial.write(ch);
+                        Console.write_byte(ch);
+                    }
+                }
+                line_buf[line_len] = 0;
             },
 
             // ----------------------------------------------------------------
@@ -251,6 +467,7 @@ pub fn execute_python_ir(comptime ir_data: []const u8) void {
         }
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // El Torito CD-ROM boot helper
@@ -290,7 +507,7 @@ pub fn findAndBootCdrom() void {
         if (sector[0] != 0x00) continue;
         if (!std.mem.eql(u8, sector[1..6], "CD001")) continue;
 
-        const catalog_lba = std.mem.readInt(u32, sector[71..75], .little);
+        const catalog_lba = std.mem.readInt(u32, sector[71..][0..4], .little);
 
         var catalog: [2048]u8 align(8) = undefined;
         bio.readBlocks(bio.media.media_id, catalog_lba, &catalog) catch continue;
