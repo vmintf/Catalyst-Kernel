@@ -106,7 +106,7 @@ Makefile           # Build orchestration
 ```
 
 ## AI Used project
-Designed by Skystarry-AI, powered by Claude & Gemini.
+Architected by Skystarry.xyz, synthesized via Claude & Gemini.
 
 ## License
 
