@@ -1,4 +1,4 @@
-# Catalyst Kernel - A bare-metal UEFI kernel using Python DSL and Zig comptime AOT compilation.
+# Catalyst Kernel - A bare-metal UEFI kernel using Python DSL and Zig AOT compilation.
 # Copyright (C) 2026  Skystarry.xyz
 #
 # This program is free software: you can redistribute it and/or modify
