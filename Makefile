@@ -10,7 +10,7 @@ all: run
 
 build:
 	zig build --cache-dir /tmp/zig-cache --global-cache-dir /tmp/zig-global-cache
-	mkdir -p iso_root/EFI/BOOT
+	mkdir -p iso_root/EFI/BOOT output
 	cp $(EFI_BIN) $(EFI_SRC)
 	dd if=/dev/zero of=$(EFI_IMG) bs=512 count=1024
 	mkfs.fat -F 12 $(EFI_IMG)

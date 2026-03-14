@@ -1,3 +1,4 @@
+import os
 import struct
 
 from .nodes import (
@@ -621,6 +622,7 @@ class KernelDecorator:
             self.ir_buffer += struct.pack("<i", node.offset)
 
     def save(self) -> None:
+        os.makedirs("backend/src/kernel", exist_ok=True)
         """Write the accumulated IR buffer to disk."""
         with open("backend/src/kernel/ir_generated.bin", "wb") as f:
             f.write(self.ir_buffer)
