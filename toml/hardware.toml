@@ -1,14 +1,27 @@
 [ir]
-version = "1.4"
+version = "1.5"
 
 [opcodes]
+# 0x01        – data
 literal      = 0x01
-write_serial = 0x10
+
+# 0x10–0x1F  – I/O
+write_serial  = 0x10
 write_str     = 0x11
 write_console = 0x12
 write_con_str = 0x13
 clear_screen  = 0x14
 write_line    = 0x15
+
+# 0x20–0x2F  – bitwise
+bit_and      = 0x20
+bit_or       = 0x21
+bit_xor      = 0x22
+bit_not      = 0x23
+bit_shl      = 0x24
+bit_shr      = 0x25
+
+# 0x30–0x3F  – arithmetic + comparison
 add_u32      = 0x30
 sub_u32      = 0x31
 mul_u32      = 0x32
@@ -17,21 +30,42 @@ mod_u32      = 0x34
 cmp_eq       = 0x35
 cmp_lt       = 0x36
 cmp_gt       = 0x37
+cmp_neq      = 0x38
+cmp_gte      = 0x39
+cmp_lte      = 0x3A
+
+# 0x40–0x4F  – memory + stack
 mem_write    = 0x40
 mem_read     = 0x41
 read_port    = 0x42
+mem_index    = 0x43
 write_port   = 0x44
 push         = 0x45
 pop          = 0x46
 mem_copy     = 0x47
-mem_index    = 0x43
+dup          = 0x48
+swap         = 0x49
+map_page     = 0x4A
+unmap_page   = 0x4B
+get_mem_map  = 0x4C
+
+# 0x50–0x5F  – control flow
 loop         = 0x50
 jmp          = 0x51
 jmp_if_zero  = 0x52
 jmp_if_eq    = 0x53
 jmp_if_lt    = 0x54
+
+# 0x60–0x6F  – keyboard / console input
 poll_key     = 0x60
 read_line    = 0x61
+
+# 0x70–0x7F  – interrupt control
+int_cli      = 0x70
+int_sti      = 0x71
+int_n        = 0x72
+
+# 0xFF        – system
 halt         = 0xFF
 
 [devices]

@@ -51,6 +51,23 @@ OP_WRITE_PORT   = OPCODES["write_port"]
 OP_PUSH         = OPCODES["push"]
 OP_POP          = OPCODES["pop"]
 OP_MEM_COPY     = OPCODES["mem_copy"]
+OP_DUP          = OPCODES["dup"]
+OP_SWAP         = OPCODES["swap"]
+OP_BIT_AND      = OPCODES["bit_and"]
+OP_BIT_OR       = OPCODES["bit_or"]
+OP_BIT_XOR      = OPCODES["bit_xor"]
+OP_BIT_NOT      = OPCODES["bit_not"]
+OP_BIT_SHL      = OPCODES["bit_shl"]
+OP_BIT_SHR      = OPCODES["bit_shr"]
+OP_CMP_NEQ      = OPCODES["cmp_neq"]
+OP_CMP_GTE      = OPCODES["cmp_gte"]
+OP_CMP_LTE      = OPCODES["cmp_lte"]
+OP_INT_CLI      = OPCODES["int_cli"]
+OP_INT_STI      = OPCODES["int_sti"]
+OP_INT_N        = OPCODES["int_n"]
+OP_MAP_PAGE     = OPCODES["map_page"]
+OP_UNMAP_PAGE   = OPCODES["unmap_page"]
+OP_GET_MEM_MAP  = OPCODES["get_mem_map"]
 OP_MEM_INDEX    = OPCODES["mem_index"]
 OP_LOOP         = OPCODES["loop"]
 OP_JMP          = OPCODES["jmp"]
@@ -277,6 +294,196 @@ class mem_copy_ir:  # noqa: N801
         self.src_addr = src_addr & 0xFFFF_FFFF
         self.count    = count    & 0xFFFF_FFFF
 
+
+
+class bit_and_ir:  # noqa: N801
+    """Emit a BIT_AND instruction: bitwise AND of *left* and *right*.
+
+    Encoding: [bit_and] [left node] [right node]
+
+    Useful for port masking, flag testing, and page-alignment calculations
+    (e.g. ``bit_and_ir(addr, u32(~0xFFF))`` to align to a 4 KiB boundary).
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class bit_or_ir:  # noqa: N801
+    """Emit a BIT_OR instruction: bitwise OR of *left* and *right*.
+
+    Encoding: [bit_or] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class bit_xor_ir:  # noqa: N801
+    """Emit a BIT_XOR instruction: bitwise XOR of *left* and *right*.
+
+    Encoding: [bit_xor] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class bit_not_ir:  # noqa: N801
+    """Emit a BIT_NOT instruction: bitwise complement of *operand*.
+
+    Encoding: [bit_not] [operand node]
+    """
+
+    def __init__(self, operand):
+        self.operand = operand
+
+
+class bit_shl_ir:  # noqa: N801
+    """Emit a BIT_SHL instruction: logical left shift *left* by *right* bits.
+
+    The shift amount is masked to 0–7 by the Zig runtime to avoid undefined
+    behaviour on u8 values.
+
+    Encoding: [bit_shl] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class bit_shr_ir:  # noqa: N801
+    """Emit a BIT_SHR instruction: logical right shift *left* by *right* bits.
+
+    Encoding: [bit_shr] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class cmp_neq_ir:  # noqa: N801
+    """Emit a CMP_NEQ instruction: 1 if *left* != *right*, else 0.
+
+    Encoding: [cmp_neq] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class cmp_gte_ir:  # noqa: N801
+    """Emit a CMP_GTE instruction: 1 if *left* >= *right*, else 0.
+
+    Encoding: [cmp_gte] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class cmp_lte_ir:  # noqa: N801
+    """Emit a CMP_LTE instruction: 1 if *left* <= *right*, else 0.
+
+    Encoding: [cmp_lte] [left node] [right node]
+    """
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+class dup_ir:  # noqa: N801
+    """Emit a DUP instruction: duplicate the top of the scratch stack.
+
+    Encoding: [dup]
+    """
+
+
+class swap_ir:  # noqa: N801
+    """Emit a SWAP instruction: exchange the top two entries on the scratch stack.
+
+    Encoding: [swap]
+    """
+
+
+class int_cli_ir:  # noqa: N801
+    """Emit an INT_CLI instruction: disable hardware interrupts (x86 cli).
+
+    Encoding: [int_cli]
+
+    Must be paired with int_sti_ir to re-enable interrupts.  Leaving
+    interrupts disabled across slow I/O sequences will block all IRQs.
+    """
+
+
+class int_sti_ir:  # noqa: N801
+    """Emit an INT_STI instruction: enable hardware interrupts (x86 sti).
+
+    Encoding: [int_sti]
+    """
+
+
+class int_n_ir:  # noqa: N801
+    """Emit an INT_N instruction: fire software interrupt *vector* (0x00–0xFF).
+
+    Encoding: [int_n] [vector: u8]
+
+    Only a subset of vectors is handled by the Zig runtime; unsupported
+    vectors are silently ignored.  Supported vectors: 0x03, 0x04, 0x10,
+    0x13, 0x15.
+    """
+
+    def __init__(self, vector: int):
+        self.vector = vector & 0xFF
+
+
+class map_page_ir:  # noqa: N801
+    """Emit a MAP_PAGE instruction: allocate and map a physical page.
+
+    Encoding: [map_page] [phys: u32 LE] [virt: u32 LE]
+
+    Only valid before ExitBootServices.  After handoff, page table
+    manipulation must be done directly via mem_write on the PML4/PDPT/PD/PT
+    structures.
+    """
+
+    def __init__(self, phys: int, virt: int):
+        self.phys = phys & 0xFFFF_FFFF
+        self.virt = virt & 0xFFFF_FFFF
+
+
+class unmap_page_ir:  # noqa: N801
+    """Emit an UNMAP_PAGE instruction: free a previously mapped virtual page.
+
+    Encoding: [unmap_page] [virt: u32 LE]
+    """
+
+    def __init__(self, virt: int):
+        self.virt = virt & 0xFFFF_FFFF
+
+
+class get_mem_map_ir:  # noqa: N801
+    """Emit a GET_MEM_MAP instruction: read the UEFI memory map into a buffer.
+
+    Encoding: [get_mem_map] [buf_addr: u32 LE] [buf_size: u32 LE]
+
+    The Zig runtime calls UEFI GetMemoryMap and writes raw
+    EFI_MEMORY_DESCRIPTOR entries starting at *buf_addr*.  A 4 KiB buffer
+    is sufficient for typical firmware maps (~40 entries).  Must be called
+    before ExitBootServices.
+    """
+
+    def __init__(self, buf_addr: int, buf_size: int):
+        self.buf_addr = buf_addr & 0xFFFF_FFFF
+        self.buf_size = buf_size & 0xFFFF_FFFF
 
 
 class mem_index_ir:  # noqa: N801
@@ -610,6 +817,97 @@ class KernelDecorator:
             self.ir_buffer += struct.pack("<I", node.dst_addr)
             self.ir_buffer += struct.pack("<I", node.src_addr)
             self.ir_buffer += struct.pack("<I", node.count)
+
+        elif isinstance(node, dup_ir):
+            # Encoding: [dup]  (no operands)
+            self.ir_buffer.append(OP_DUP)
+
+        elif isinstance(node, swap_ir):
+            # Encoding: [swap]  (no operands)
+            self.ir_buffer.append(OP_SWAP)
+
+        elif isinstance(node, bit_and_ir):
+            # Encoding: [bit_and] [left node] [right node]
+            self.ir_buffer.append(OP_BIT_AND)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, bit_or_ir):
+            # Encoding: [bit_or] [left node] [right node]
+            self.ir_buffer.append(OP_BIT_OR)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, bit_xor_ir):
+            # Encoding: [bit_xor] [left node] [right node]
+            self.ir_buffer.append(OP_BIT_XOR)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, bit_not_ir):
+            # Encoding: [bit_not] [operand node]
+            self.ir_buffer.append(OP_BIT_NOT)
+            self._serialize(node.operand)
+
+        elif isinstance(node, bit_shl_ir):
+            # Encoding: [bit_shl] [left node] [right node]
+            self.ir_buffer.append(OP_BIT_SHL)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, bit_shr_ir):
+            # Encoding: [bit_shr] [left node] [right node]
+            self.ir_buffer.append(OP_BIT_SHR)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, cmp_neq_ir):
+            # Encoding: [cmp_neq] [left node] [right node]
+            self.ir_buffer.append(OP_CMP_NEQ)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, cmp_gte_ir):
+            # Encoding: [cmp_gte] [left node] [right node]
+            self.ir_buffer.append(OP_CMP_GTE)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, cmp_lte_ir):
+            # Encoding: [cmp_lte] [left node] [right node]
+            self.ir_buffer.append(OP_CMP_LTE)
+            self._serialize(node.left)
+            self._serialize(node.right)
+
+        elif isinstance(node, int_cli_ir):
+            # Encoding: [int_cli]  (no operands)
+            self.ir_buffer.append(OP_INT_CLI)
+
+        elif isinstance(node, int_sti_ir):
+            # Encoding: [int_sti]  (no operands)
+            self.ir_buffer.append(OP_INT_STI)
+
+        elif isinstance(node, int_n_ir):
+            # Encoding: [int_n] [vector: u8]
+            self.ir_buffer.append(OP_INT_N)
+            self.ir_buffer.append(node.vector)
+
+        elif isinstance(node, map_page_ir):
+            # Encoding: [map_page] [phys: u32 LE] [virt: u32 LE]
+            self.ir_buffer.append(OP_MAP_PAGE)
+            self.ir_buffer += struct.pack("<I", node.phys)
+            self.ir_buffer += struct.pack("<I", node.virt)
+
+        elif isinstance(node, unmap_page_ir):
+            # Encoding: [unmap_page] [virt: u32 LE]
+            self.ir_buffer.append(OP_UNMAP_PAGE)
+            self.ir_buffer += struct.pack("<I", node.virt)
+
+        elif isinstance(node, get_mem_map_ir):
+            # Encoding: [get_mem_map] [buf_addr: u32 LE] [buf_size: u32 LE]
+            self.ir_buffer.append(OP_GET_MEM_MAP)
+            self.ir_buffer += struct.pack("<I", node.buf_addr)
+            self.ir_buffer += struct.pack("<I", node.buf_size)
 
         elif isinstance(node, mem_index_ir):
             # Encoding: [mem_index] [base_addr: u32 LE] [index node bytes]

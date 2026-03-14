@@ -13,37 +13,71 @@ const uefi = std.os.uefi;
 const BlockIo = uefi.protocol.BlockIo;
 
 pub const OpCode = enum(u8) {
-    literal      = 0x01,
-    write_serial = 0x10,
+    // 0x01 – data
+    literal       = 0x01,
+
+    // 0x10–0x1F – I/O
+    write_serial  = 0x10,
     write_str     = 0x11, // runtime string write; no comptime branch cost
     write_console = 0x12, // write single byte to UEFI con_out
     write_con_str = 0x13, // write ASCII string to UEFI con_out
     clear_screen  = 0x14, // clear UEFI con_out and reset cursor; ANSI on serial
     write_line    = 0x15, // write line_buf[0..line_len] to serial + con_out
-    add_u32      = 0x30,
-    sub_u32      = 0x31,
-    mul_u32      = 0x32,
-    div_u32      = 0x33,
-    mod_u32      = 0x34,
-    cmp_eq       = 0x35, // 1 if left == right, else 0
-    cmp_lt       = 0x36, // 1 if left <  right, else 0
-    cmp_gt       = 0x37, // 1 if left >  right, else 0
-    mem_write    = 0x40,
-    mem_read     = 0x41,
-    read_port    = 0x42, // runtime inb; result used as expression value
-    mem_index    = 0x43,
-    write_port   = 0x44, // runtime outb; acquires hardware control
-    push         = 0x45, // push expression result onto the scratch stack
-    pop          = 0x46, // pop top of scratch stack into a discard slot
-    mem_copy     = 0x47, // bulk byte copy: src_addr -> dst_addr, count bytes // read byte at base_addr + index expression
-    loop         = 0x50,
-    jmp          = 0x51,
-    jmp_if_zero  = 0x52,
-    jmp_if_eq    = 0x53,
-    jmp_if_lt    = 0x54,
-    poll_key     = 0x60, // block until a key is pressed, echo to serial + console
-    read_line    = 0x61, // read a line until Enter, echo chars, handle backspace
-    halt         = 0xff,
+
+    // 0x20–0x2F – bitwise
+    bit_and       = 0x20, // left & right
+    bit_or        = 0x21, // left | right
+    bit_xor       = 0x22, // left ^ right
+    bit_not       = 0x23, // ~operand (single operand)
+    bit_shl       = 0x24, // left << (right & 7)
+    bit_shr       = 0x25, // left >> (right & 7)
+
+    // 0x30–0x3F – arithmetic + comparison
+    add_u32       = 0x30,
+    sub_u32       = 0x31,
+    mul_u32       = 0x32,
+    div_u32       = 0x33,
+    mod_u32       = 0x34,
+    cmp_eq        = 0x35, // 1 if left == right, else 0
+    cmp_lt        = 0x36, // 1 if left <  right, else 0
+    cmp_gt        = 0x37, // 1 if left >  right, else 0
+    cmp_neq       = 0x38, // 1 if left != right, else 0
+    cmp_gte       = 0x39, // 1 if left >= right, else 0
+    cmp_lte       = 0x3A, // 1 if left <= right, else 0
+
+    // 0x40–0x4F – memory + stack
+    mem_write     = 0x40,
+    mem_read      = 0x41,
+    read_port     = 0x42, // runtime inb; result echoed to serial
+    mem_index     = 0x43, // read byte at base_addr + index expression
+    write_port    = 0x44, // runtime outb; acquires hardware control
+    push          = 0x45, // push expression result onto the scratch stack
+    pop           = 0x46, // pop top of scratch stack (discard)
+    mem_copy      = 0x47, // bulk byte copy: src_addr -> dst_addr, count bytes
+    dup           = 0x48, // duplicate top of scratch stack
+    swap          = 0x49, // swap top two entries on scratch stack
+    map_page      = 0x4A, // map physical page into virtual address space
+    unmap_page    = 0x4B, // unmap virtual page
+    get_mem_map   = 0x4C, // read UEFI memory map into scratch buffer
+
+    // 0x50–0x5F – control flow
+    loop          = 0x50,
+    jmp           = 0x51,
+    jmp_if_zero   = 0x52,
+    jmp_if_eq     = 0x53,
+    jmp_if_lt     = 0x54,
+
+    // 0x60–0x6F – keyboard / console input
+    poll_key      = 0x60, // block until a key is pressed, echo to serial + console
+    read_line     = 0x61, // read a line until Enter, echo chars, handle backspace
+
+    // 0x70–0x7F – interrupt control
+    int_cli       = 0x70, // disable interrupts (cli)
+    int_sti       = 0x71, // enable interrupts (sti)
+    int_n         = 0x72, // software interrupt: int imm8
+
+    // 0xFF – system
+    halt          = 0xff,
     _,
 };
 
@@ -228,6 +262,70 @@ fn evaluate_ir(ir: []const u8, pc: *usize) u8 {
             const left  = evaluate_ir(ir, pc);
             const right = evaluate_ir(ir, pc);
             return if (left > right) 1 else 0;
+        },
+        .cmp_neq => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return if (left != right) 1 else 0;
+        },
+        .cmp_gte => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return if (left >= right) 1 else 0;
+        },
+        .cmp_lte => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return if (left <= right) 1 else 0;
+        },
+        // Bitwise – all operators consume two sub-expressions except bit_not.
+        .bit_and => {
+        const left  = evaluate_ir(ir, pc);
+        const right = evaluate_ir(ir, pc);
+        return left & right;
+    },
+        .bit_or => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return left | right;
+        },
+        .bit_xor => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return left ^ right;
+        },
+        .bit_not => {
+            const operand = evaluate_ir(ir, pc);
+            return ~operand;
+        },
+        .bit_shl => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            // Mask shift amount to 0–7 to avoid undefined behaviour on u8.
+            return left << @truncate(right & 7);
+        },
+        .bit_shr => {
+            const left  = evaluate_ir(ir, pc);
+            const right = evaluate_ir(ir, pc);
+            return left >> @truncate(right & 7);
+        },
+        // Stack peek helpers – dup/swap are usable as expression nodes so
+        // that DSL authors can read the scratch stack inside evaluate_ir.
+        .dup => {
+        // Return a copy of the top without consuming it.
+            if (scratch_sp > 0) return scratch_stack[scratch_sp - 1];
+        return 0;
+    },
+        .swap => {
+            // Swap top two entries; return the new top (formerly second).
+            if (scratch_sp >= 2) {
+                const a = scratch_stack[scratch_sp - 1];
+                const b = scratch_stack[scratch_sp - 2];
+                scratch_stack[scratch_sp - 1] = b;
+                scratch_stack[scratch_sp - 2] = a;
+                return b;
+            }
+            return 0;
         },
         .mem_index => {
             // Encoding: [mem_index] [base_addr: u32 LE] [index node bytes]
@@ -449,6 +547,42 @@ pub fn execute_python_ir(ir_data: []const u8) void {
             },
 
             // ----------------------------------------------------------------
+            // Stack – dup
+            //
+            // Encoding: [dup]
+            //
+            // Pushes a copy of the current top byte onto the scratch stack.
+            // Safe no-op when the stack is empty or full (overflow policy
+            // mirrors push: silently discard rather than fault).
+            // ----------------------------------------------------------------
+
+            .dup => {
+                pc += 1;
+                if (scratch_sp > 0 and scratch_sp < SCRATCH_STACK_DEPTH) {
+                    scratch_stack[scratch_sp] = scratch_stack[scratch_sp - 1];
+                    scratch_sp += 1;
+                }
+            },
+
+            // ----------------------------------------------------------------
+            // Stack – swap
+            //
+            // Encoding: [swap]
+            //
+            // Exchanges the top two bytes on the scratch stack in-place.
+            // No-op when fewer than two entries are present.
+            // ----------------------------------------------------------------
+
+            .swap => {
+                pc += 1;
+                if (scratch_sp >= 2) {
+                    const a = scratch_stack[scratch_sp - 1];
+                    scratch_stack[scratch_sp - 1] = scratch_stack[scratch_sp - 2];
+                    scratch_stack[scratch_sp - 2] = a;
+                }
+            },
+
+            // ----------------------------------------------------------------
             // Memory – mem_copy
             //
             // Encoding: [mem_copy] [dst_addr: u32 LE] [src_addr: u32 LE]
@@ -605,6 +739,124 @@ pub fn execute_python_ir(ir_data: []const u8) void {
                     }
                 }
                 line_buf[line_len] = 0;
+            },
+
+            // ----------------------------------------------------------------
+            // Interrupt control – int_cli / int_sti / int_n
+            //
+            // int_cli and int_sti map directly to the x86 cli/sti instructions.
+            // They must be used with care: leaving interrupts disabled across a
+            // long IR sequence will block all hardware IRQs.
+            //
+            // int_n encoding: [int_n] [vector: u8]
+            // Fires a software interrupt via the `int imm8` instruction.
+            // Useful for BIOS legacy calls and testing IDT entries during
+            // early kernel bring-up before ExitBootServices.
+            // ----------------------------------------------------------------
+
+            .int_cli => {
+                pc += 1;
+                asm volatile ("cli");
+            },
+
+            .int_sti => {
+                pc += 1;
+                asm volatile ("sti");
+            },
+
+            .int_n => {
+                pc += 1;
+                const vector = ir_data[pc];
+                pc += 1;
+                // Zig does not support variable int imm8 directly; use a
+                // look-up over the common vectors used in early OS bring-up.
+                // Extend this table as new vectors are needed.
+                switch (vector) {
+                    0x03 => asm volatile ("int $0x03"), // breakpoint
+                    0x04 => asm volatile ("int $0x04"), // overflow
+                    0x10 => asm volatile ("int $0x10"), // BIOS video (legacy)
+                    0x13 => asm volatile ("int $0x13"), // BIOS disk  (legacy)
+                    0x15 => asm volatile ("int $0x15"), // BIOS misc  (legacy)
+                    else => {},                          // unsupported – no-op
+                }
+            },
+
+            // ----------------------------------------------------------------
+            // Memory management – map_page / unmap_page / get_mem_map
+            //
+            // These are thin wrappers over UEFI Boot Services memory calls.
+            // They are only valid before ExitBootServices; once the firmware
+            // hands off memory ownership, the DSL must manage mappings itself
+            // using mem_write/mem_read on the page tables directly.
+            //
+            // map_page encoding:   [map_page]   [phys: u32 LE] [virt: u32 LE]
+            // unmap_page encoding: [unmap_page] [virt: u32 LE]
+            // get_mem_map encoding:[get_mem_map] [buf_addr: u32 LE] [buf_size: u32 LE]
+            // ----------------------------------------------------------------
+
+            .map_page => {
+                // Allocate one 4 KiB page of loader data via UEFI pool allocator.
+                // *phys* is treated as a hint recorded in the virt slot so the
+                // DSL can track the intended physical target; actual placement is
+                // decided by the firmware (AllocateAnyPages policy).
+                // Physical-address-fixed allocation (AllocateAddress) requires the
+                // raw function-pointer ABI that changed in 0.15.x and is better
+                // handled post-ExitBootServices via direct page-table writes.
+                pc += 1;
+                const phys = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const virt = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const bs = uefi.system_table.boot_services orelse break;
+                const page_size: usize = 0x1000;
+                const buf = bs.allocatePool(.loader_data, page_size) catch break;
+                // allocatePool returns []align(8) u8 in Zig 0.15.x; extract
+                // the raw address via .ptr before passing to @intFromPtr.
+                // Write the firmware-assigned address into the virt slot so the
+                // DSL can read it back via mem_read and build its own page tables.
+                @as(*volatile u32, @ptrFromInt(virt)).* = @truncate(@intFromPtr(buf.ptr));
+                _ = phys; // physical hint – used by DSL for page table mapping
+            },
+
+            .unmap_page => {
+                pc += 1;
+                const virt = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const bs = uefi.system_table.boot_services orelse break;
+                // Read back the pointer that map_page stored at the virt slot.
+                // freePool requires [*]align(8) u8; the allocatePool guarantee
+                // ensures the stored address satisfies that alignment.
+                const raw_addr: usize = @as(*volatile u32, @ptrFromInt(virt)).*;
+                const ptr: [*]align(8) u8 = @ptrFromInt(raw_addr);
+                bs.freePool(ptr) catch {};
+            },
+
+            .get_mem_map => {
+                // Read the UEFI memory map into a DSL-managed buffer.
+                // Encoding: [get_mem_map] [buf_addr: u32 LE] [buf_size: u32 LE]
+                //
+                // Writes raw MemoryDescriptor entries starting at buf_addr.
+                // The DSL is responsible for allocating a buffer large enough;
+                // 4 KiB covers typical firmware maps (~40 entries * ~48 bytes).
+                //
+                // Zig 0.15.x API: getMemoryMap takes a single
+                // []align(@alignOf(MemoryDescriptor)) u8 buffer and returns
+                // a MemoryMapSlice.  We reconstruct the slice from the raw
+                // DSL-managed address and size operands.
+                pc += 1;
+                const buf_addr = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const buf_size = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const bs = uefi.system_table.boot_services orelse break;
+                // @alignCast is required because @ptrFromInt yields *u8
+                // with unknown alignment; we assert the DSL caller has placed
+                // buf_addr on a MemoryDescriptor-aligned boundary.
+                const raw: [*]align(@alignOf(uefi.tables.MemoryDescriptor)) u8 =
+                    @alignCast(@as([*]u8, @ptrFromInt(buf_addr)));
+                const buf: []align(@alignOf(uefi.tables.MemoryDescriptor)) u8 =
+                    raw[0..buf_size];
+                _ = bs.getMemoryMap(buf) catch {};
             },
 
             // ----------------------------------------------------------------
