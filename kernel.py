@@ -45,6 +45,10 @@ OP_CMP_GT       = OPCODES["cmp_gt"]
 OP_MEM_WRITE    = OPCODES["mem_write"]
 OP_MEM_READ     = OPCODES["mem_read"]
 OP_READ_PORT    = OPCODES["read_port"]
+OP_WRITE_PORT   = OPCODES["write_port"]
+OP_PUSH         = OPCODES["push"]
+OP_POP          = OPCODES["pop"]
+OP_MEM_COPY     = OPCODES["mem_copy"]
 OP_MEM_INDEX    = OPCODES["mem_index"]
 OP_LOOP         = OPCODES["loop"]
 OP_JMP          = OPCODES["jmp"]
@@ -166,6 +170,85 @@ class read_port_ir:  # noqa: N801
 
     def __init__(self, port: int):
         self.port = port & 0xFFFF
+
+
+class write_port_ir:  # noqa: N801
+    """Emit a WRITE_PORT instruction: runtime outb to *port* (u16).
+
+    Acquires hardware control by writing *value* to the specified I/O port.
+    Required before any device register sequence that needs port ownership
+    (e.g. PIC remapping, PIT channel programming, UART setup).
+
+    Encoding: [write_port] [port: u16 LE] [value node bytes]
+
+    Example::
+
+        kernel._serialize(write_port_ir(0x43, u32(0x36)))  # PIT mode register
+    """
+
+    def __init__(self, port: int, value):
+        self.port = port & 0xFFFF
+        self.value = value
+
+
+class push_ir:  # noqa: N801
+    """Emit a PUSH instruction: save *value* onto the scratch stack.
+
+    The scratch stack is a 64-entry LIFO buffer managed entirely by the Zig
+    runtime.  push/pop pairs provide temporary storage when writing complex
+    DSL logic (bit manipulation, multi-step comparisons) without allocating
+    named registers or global variables.
+
+    Encoding: [push] [value node bytes]
+
+    Example (save a port read for later comparison)::
+
+        kernel._serialize(push_ir(read_port_ir(PORTS["ps2_status"])))
+        # ... intervening instructions ...
+        kernel._serialize(pop_ir())
+    """
+
+    def __init__(self, value):
+        self.value = value
+
+
+class pop_ir:  # noqa: N801
+    """Emit a POP instruction: discard the top byte from the scratch stack.
+
+    pop acts as a cleanup instruction; the popped value is not forwarded to
+    serial or console.  Calling pop on an empty stack is a safe no-op in the
+    Zig runtime.
+
+    Encoding: [pop]
+
+    Keep push/pop calls balanced within a logical block to avoid stack drift
+    across loop iterations.
+    """
+
+
+class mem_copy_ir:  # noqa: N801
+    """Emit a MEM_COPY instruction: copy *count* bytes from *src_addr* to *dst_addr*.
+
+    All three fields are absolute 32-bit physical addresses / byte counts.
+    The Zig runtime performs a volatile byte loop so that copies targeting
+    MMIO regions (e.g. the VGA frame buffer at 0xB8000) are not elided by
+    the optimizer.
+
+    Encoding: [mem_copy] [dst_addr: u32 LE] [src_addr: u32 LE] [count: u32 LE]
+
+    Overlapping source and destination windows are not supported.
+
+    Example (blit a 80x25 VGA text-mode screen)::
+
+        VGA_BUF  = DEVICES["vga"]
+        BACK_BUF = 0x0010_0000  # 1 MiB scratch area
+        kernel._serialize(mem_copy_ir(VGA_BUF, BACK_BUF, 80 * 25 * 2))
+    """
+
+    def __init__(self, dst_addr: int, src_addr: int, count: int):
+        self.dst_addr = dst_addr & 0xFFFF_FFFF
+        self.src_addr = src_addr & 0xFFFF_FFFF
+        self.count    = count    & 0xFFFF_FFFF
 
 
 
@@ -470,6 +553,28 @@ class KernelDecorator:
             # Encoding: [read_port] [port: u16 LE]
             self.ir_buffer.append(OP_READ_PORT)
             self.ir_buffer += struct.pack("<H", node.port)
+
+        elif isinstance(node, write_port_ir):
+            # Encoding: [write_port] [port: u16 LE] [value node bytes]
+            self.ir_buffer.append(OP_WRITE_PORT)
+            self.ir_buffer += struct.pack("<H", node.port)
+            self._serialize(node.value)
+
+        elif isinstance(node, push_ir):
+            # Encoding: [push] [value node bytes]
+            self.ir_buffer.append(OP_PUSH)
+            self._serialize(node.value)
+
+        elif isinstance(node, pop_ir):
+            # Encoding: [pop]  (no operands)
+            self.ir_buffer.append(OP_POP)
+
+        elif isinstance(node, mem_copy_ir):
+            # Encoding: [mem_copy] [dst_addr: u32 LE] [src_addr: u32 LE] [count: u32 LE]
+            self.ir_buffer.append(OP_MEM_COPY)
+            self.ir_buffer += struct.pack("<I", node.dst_addr)
+            self.ir_buffer += struct.pack("<I", node.src_addr)
+            self.ir_buffer += struct.pack("<I", node.count)
 
         elif isinstance(node, mem_index_ir):
             # Encoding: [mem_index] [base_addr: u32 LE] [index node bytes]

@@ -29,7 +29,11 @@ pub const OpCode = enum(u8) {
     mem_write    = 0x40,
     mem_read     = 0x41,
     read_port    = 0x42, // runtime inb; result used as expression value
-    mem_index    = 0x43, // read byte at base_addr + index expression
+    mem_index    = 0x43,
+    write_port   = 0x44, // runtime outb; acquires hardware control
+    push         = 0x45, // push expression result onto the scratch stack
+    pop          = 0x46, // pop top of scratch stack into a discard slot
+    mem_copy     = 0x47, // bulk byte copy: src_addr -> dst_addr, count bytes // read byte at base_addr + index expression
     loop         = 0x50,
     jmp          = 0x51,
     jmp_if_zero  = 0x52,
@@ -90,6 +94,15 @@ pub const Serial = struct {
 
 pub var line_buf: [256]u8 = undefined;
 pub var line_len: usize   = 0;
+
+// ---------------------------------------------------------------------------
+// Scratch stack – used by push/pop opcodes for temporary value storage.
+// A fixed 64-entry stack is sufficient for the DSL's bit-manipulation idioms.
+// ---------------------------------------------------------------------------
+
+const SCRATCH_STACK_DEPTH = 64;
+var scratch_stack: [SCRATCH_STACK_DEPTH]u8 = undefined;
+var scratch_sp: usize = 0; // index of next free slot (grows upward)
 
 // ---------------------------------------------------------------------------
 // Console (UEFI Simple Text Output)
@@ -320,6 +333,99 @@ pub fn execute_python_ir(ir_data: []const u8) void {
                     : [port] "{dx}" (@as(u16, port))
                 );
                 Serial.write(val);
+            },
+
+            // ----------------------------------------------------------------
+            // I/O – runtime port write (write_port)
+            //
+            // Encoding: [write_port] [port: u16 LE] [value node bytes]
+            //
+            // Executes a single x86 outb instruction, transferring hardware
+            // control to the device at *port*.  This is required before any
+            // device-specific register sequence (e.g. PIC remapping, PIT
+            // programming) to establish ownership of that I/O port range.
+            // ----------------------------------------------------------------
+
+            .write_port => {
+                pc += 1;
+                const port = std.mem.readInt(u16, ir_data[pc..][0..2], .little);
+                pc += 2;
+                const val = evaluate_ir(ir_data, &pc);
+                asm volatile ("outb %[data], %[port]"
+                    :
+                    : [data] "{al}" (val),
+                      [port] "{dx}" (@as(u16, port))
+                );
+            },
+
+            // ----------------------------------------------------------------
+            // Stack – push
+            //
+            // Encoding: [push] [value node bytes]
+            //
+            // Evaluates *value* and pushes the result onto the scratch stack.
+            // Silently drops the value when the stack is full, preventing a
+            // kernel panic at the cost of a lost intermediate result.  DSL
+            // authors should keep push/pop pairs balanced.
+            // ----------------------------------------------------------------
+
+            .push => {
+                pc += 1;
+                const val = evaluate_ir(ir_data, &pc);
+                if (scratch_sp < SCRATCH_STACK_DEPTH) {
+                    scratch_stack[scratch_sp] = val;
+                    scratch_sp += 1;
+                }
+                // Silently discard if overflow; avoids a fatal fault in kernel.
+            },
+
+            // ----------------------------------------------------------------
+            // Stack – pop
+            //
+            // Encoding: [pop]
+            //
+            // Pops the top byte off the scratch stack and discards it.  A pop
+            // on an empty stack is a no-op; the DSL emitter is responsible for
+            // balanced usage.  The popped value is intentionally not forwarded
+            // to Serial/Console so that pop acts as a pure cleanup instruction.
+            // ----------------------------------------------------------------
+
+            .pop => {
+                pc += 1;
+                if (scratch_sp > 0) {
+                    scratch_sp -= 1;
+                }
+                // No-op on underflow; consistent with push overflow policy.
+            },
+
+            // ----------------------------------------------------------------
+            // Memory – mem_copy
+            //
+            // Encoding: [mem_copy] [dst_addr: u32 LE] [src_addr: u32 LE]
+            //                      [count: u32 LE]
+            //
+            // Copies *count* bytes from *src_addr* to *dst_addr* using a
+            // volatile byte loop so that the compiler does not elide or reorder
+            // accesses to MMIO regions (e.g. the VGA frame buffer at 0xB8000).
+            // Overlapping regions are not supported; use two sequential copies
+            // if source and destination windows may overlap.
+            // ----------------------------------------------------------------
+
+            .mem_copy => {
+                pc += 1;
+                const dst_addr = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const src_addr = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                const count    = std.mem.readInt(u32, ir_data[pc..][0..4], .little);
+                pc += 4;
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    // Volatile accesses prevent the optimizer from collapsing
+                    // this loop when src or dst are MMIO-mapped addresses.
+                    const byte = @as(*volatile u8, @ptrFromInt(src_addr + i)).*;
+                    @as(*volatile u8, @ptrFromInt(dst_addr + i)).* = byte;
+                }
             },
 
             // ----------------------------------------------------------------
