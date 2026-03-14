@@ -105,6 +105,9 @@ build.zig          # Zig build configuration
 Makefile           # Build orchestration
 ```
 
+## AI Used project
+Designed by Skystarry-AI, powered by Claude & Gemini.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0.
