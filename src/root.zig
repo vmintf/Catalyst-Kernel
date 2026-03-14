@@ -18,6 +18,8 @@ pub const OpCode = enum(u8) {
     write_str     = 0x11, // runtime string write; no comptime branch cost
     write_console = 0x12, // write single byte to UEFI con_out
     write_con_str = 0x13, // write ASCII string to UEFI con_out
+    clear_screen  = 0x14, // clear UEFI con_out and reset cursor; ANSI on serial
+    write_line    = 0x15, // write line_buf[0..line_len] to serial + con_out
     add_u32      = 0x30,
     sub_u32      = 0x31,
     mul_u32      = 0x32,
@@ -123,6 +125,14 @@ pub const Console = struct {
         for (s) |ch| {
             write_byte(ch);
         }
+    }
+
+    /// Clear the UEFI con_out and reset the cursor to (0, 0).
+    /// Uses the Simple Text Output clearScreen() protocol call, which works
+    /// correctly regardless of whether the firmware supports ANSI sequences.
+    pub fn clear() void {
+        const con_out = uefi.system_table.con_out orelse return;
+        _ = con_out.clearScreen() catch {};
     }
 };
 
@@ -300,8 +310,48 @@ pub fn execute_python_ir(ir_data: []const u8) void {
             },
 
             // ----------------------------------------------------------------
-            // Memory
+            // I/O – clear screen (clear_screen)
+            //
+            // Encoding: [clear_screen]  (no operands)
+            //
+            // Clears the UEFI con_out via the Simple Text Output clearScreen()
+            // protocol call, which resets the cursor to (0, 0) and fills the
+            // display with the current background attribute.  ANSI CSI 2J + H
+            // is also sent to serial so that a connected terminal emulator
+            // mirrors the clear.
             // ----------------------------------------------------------------
+
+            .clear_screen => {
+                pc += 1;
+                // UEFI side: use the protocol's native clear, not ANSI escapes.
+                Console.clear();
+                // Serial side: standard ANSI erase-display + cursor-home.
+                for ("\x1B[2J\x1B[H") |ch| Serial.write(ch);
+            },
+
+            // ----------------------------------------------------------------
+            // I/O – write line buffer (write_line)
+            //
+            // Encoding: [write_line]  (no operands)
+            //
+            // Writes line_buf[0..line_len] to both serial and UEFI con_out,
+            // followed by a CR+LF pair.  Intended for echo and similar commands
+            // that want to reflect the most recently read input line without
+            // re-encoding it in the IR byte stream.
+            // ----------------------------------------------------------------
+
+            .write_line => {
+                pc += 1;
+                // Write the live content of line_buf up to line_len.
+                for (line_buf[0..line_len]) |ch| {
+                    Serial.write(ch);
+                    Console.write_byte(ch);
+                }
+                // Terminate with CR+LF to match the shell's newline convention.
+                Serial.write('\r');
+                Serial.write('\n');
+                Console.write_str("\r\n");
+            },
 
             .mem_write => {
                 pc += 1;

@@ -34,6 +34,8 @@ OP_WRITE_SERIAL = OPCODES["write_serial"]
 OP_WRITE_STR     = OPCODES["write_str"]
 OP_WRITE_CONSOLE = OPCODES["write_console"]
 OP_WRITE_CON_STR = OPCODES["write_con_str"]
+OP_CLEAR_SCREEN  = OPCODES["clear_screen"]
+OP_WRITE_LINE    = OPCODES["write_line"]
 OP_ADD_U32      = OPCODES["add_u32"]
 OP_SUB_U32      = OPCODES["sub_u32"]
 OP_MUL_U32      = OPCODES["mul_u32"]
@@ -141,6 +143,31 @@ class write_con_str_ir:  # noqa: N801
 
     def __init__(self, text: str):
         self.text = text
+
+
+class clear_screen_ir:  # noqa: N801
+    """Emit a CLEAR_SCREEN instruction: clear both UEFI con_out and the serial terminal.
+
+    No operands.  On the UEFI side the Simple Text Output clearScreen()
+    protocol call is used, which correctly fills the display and resets the
+    cursor to (0, 0) regardless of firmware ANSI support.  On the serial
+    side, ANSI CSI 2J + CSI H is sent so that a connected terminal emulator
+    (e.g. minicom, screen) mirrors the clear.
+
+    Encoding: [clear_screen]
+    """
+
+
+class write_line_ir:  # noqa: N801
+    """Emit a WRITE_LINE instruction: echo line_buf[0..line_len] to serial and con_out.
+
+    No operands.  The Zig runtime writes the contents of the global line_buf
+    (populated by the most recent read_line) to both output channels, followed
+    by a CR+LF pair.  Use this in echo-style commands to avoid re-encoding
+    the input string in the IR byte stream.
+
+    Encoding: [write_line]
+    """
 
 class mem_write:  # noqa: N801 - intentionally lowercase for DSL ergonomics
     """Emit a MEM_WRITE instruction: store *value* at *addr*."""
@@ -540,6 +567,14 @@ class KernelDecorator:
             self.ir_buffer += struct.pack("<H", len(encoded))
             self.ir_buffer += encoded
 
+        elif isinstance(node, clear_screen_ir):
+            # Encoding: [clear_screen]  (no operands)
+            self.ir_buffer.append(OP_CLEAR_SCREEN)
+
+        elif isinstance(node, write_line_ir):
+            # Encoding: [write_line]  (no operands)
+            self.ir_buffer.append(OP_WRITE_LINE)
+
         elif isinstance(node, mem_write):
             self.ir_buffer.append(OP_MEM_WRITE)
             self.ir_buffer += struct.pack("<I", node.addr)
@@ -809,15 +844,18 @@ if __name__ == "__main__":
 
     @shell.command("echo")
     def cmd_echo():
-        # For now echo a fixed string; runtime arg parsing comes later.
-        kernel._serialize(write_con_str_ir("[echo]\r\n"))
-        kernel._serialize(write_str_ir("[echo]\r\n"))
+        # Reflect the argument portion of line_buf (everything after "echo ").
+        # line_buf holds the full input line; write_line_ir outputs it as-is so
+        # the user sees exactly what they typed after the command name.
+        # A future revision can strip the leading token once arg-parsing lands.
+        kernel._serialize(write_line_ir())
 
     @shell.command("clear")
     def cmd_clear():
-        # ANSI escape: clear screen + move cursor to top-left.
-        kernel._serialize(write_con_str_ir("\x1B[2J\x1B[H"))
-        kernel._serialize(write_str_ir("\x1B[2J\x1B[H"))
+        # clear_screen_ir drives con_out.clearScreen() on the UEFI side and
+        # sends ANSI CSI 2J + CSI H to serial.  ANSI escapes alone are not
+        # sufficient because UEFI firmware does not interpret them.
+        kernel._serialize(clear_screen_ir())
 
     @shell.command("version")
     def cmd_version():
