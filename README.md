@@ -2,72 +2,110 @@
 
 ## Overview
 
-**Catalyst Kernel** is an experimental operating system kernel project that explores a unique hybrid architecture. It combines **Python**, acting as the high-level "brain" for logic generation, with **Zig**, which handles low-level hardware interfacing and execution.
+**Catalyst Kernel** is an experimental operating system kernel that uses a hybrid architecture: **Python** handles all compile-time logic generation, and **Zig** provides a minimal bare-metal runtime that executes the result.
 
-The primary goal of this project is to build a functional OS kernel (and eventually a full OS) where the core logic is defined in Python and compiled into a custom Intermediate Representation (IR), which is then executed by a bare-metal Zig runtime.
+The kernel logic is defined entirely in Python and compiled into a custom Intermediate Representation (IR) binary. The Zig runtime is a thin interpreter — a single dispatch loop — that maps opcodes to hardware operations. Zig has no knowledge of kernel policy; all of that lives in Python.
+
+This separation means the Zig binary stays small and stable (184 KB EFI, 1.1 MB ISO), while OS behaviour is controlled entirely from the Python side without recompiling the runtime.
+
+## Architecture
+
+```
+kernel.py  (Python)
+    │
+    │  compile-time: opcode emission, control flow, shell dispatch,
+    │  IR serialisation, label/patch, command table generation
+    │
+    ▼
+ir_generated.bin  (~1 KB)
+    │
+    ▼
+root.zig  (Zig)
+    │
+    │  runtime-only: opcode dispatch loop, UEFI HAL,
+    │  serial I/O, keyboard, memory, port I/O, interrupt control
+    │
+    ▼
+BOOTX64.EFI  (172 KB)  →  kernel.iso  (1.1 MB)
+```
+
+## Opcode Set
+
+The IR supports the following opcode groups:
+
+- **I/O**: serial write, UEFI console write, clear screen, echo line
+- **Bitwise**: `and`, `or`, `xor`, `not`, `shl`, `shr`
+- **Arithmetic**: `add`, `sub`, `mul`, `div`, `mod`
+- **Comparison**: `eq`, `neq`, `lt`, `gt`, `gte`, `lte`
+- **Memory**: `mem_read`, `mem_write`, `mem_copy`, `mem_index`
+- **Stack**: `push`, `pop`, `dup`, `swap`
+- **Port I/O**: `read_port`, `write_port`
+- **Control flow**: `loop`, `jmp`, `jmp_if_zero`, `jmp_if_eq`, `jmp_if_lt`
+- **Input**: `poll_key`, `read_line`
+- **Interrupt**: `int_cli`, `int_sti`, `int_n`
+- **Memory management**: `map_page`, `unmap_page`, `get_mem_map`
+- **System**: `halt`
 
 ## Features
 
-- **Hybrid Architecture**:
-  - **Python (`kernel.py`)**: Defines kernel logic, opcodes, and generates bytecode (IR).
-  - **Zig (`src/*.zig`)**: Provides the UEFI bootloader, hardware abstraction layer (HAL), and the IR interpreter.
-- **Custom IR**: A stack-based bytecode system supporting arithmetic, memory operations, loops, and hardware I/O.
-- **UEFI Boot**: Boots directly on UEFI-compliant systems (x86_64).
-- **Compile-Time Evaluation**: Leverages Zig's `comptime` capabilities to optimize the execution of the generated IR.
-
-## Development Environment
-
-This project is designed to be developed in Linux environments. Supported environments include:
-
-- **Ubuntu**
-- **WSL (Windows Subsystem for Linux)**
+- UEFI boot on x86_64
+- Interactive shell with runtime-compiled dispatch table
+- Hardware port I/O (`outb`/`inb`) for device control
+- Interrupt enable/disable and software interrupts
+- UEFI memory map access
+- VGA-capable bulk memory copy for screen rendering
+- Scratch stack for complex DSL logic (bit manipulation, multi-step expressions)
 
 ## Prerequisites
 
-To build and run this project, you need the following tools installed:
-
-- **Zig** (Latest stable or nightly)
+- **Zig 0.15.2** (API is version-sensitive; other versions may require changes)
 - **Python 3.11+**
-- **QEMU** (for emulation)
-- **xorriso** (for ISO creation)
-- **mtools** (for FAT filesystem manipulation)
-- **Make**
+- **QEMU**
+- **xorriso**
+- **mtools**
+- **make**
+- **OVMF** (`/usr/share/ovmf/OVMF.fd`)
 
 ### Installation (Ubuntu/Debian)
 
 ```bash
 sudo apt update
-sudo apt install qemu-system-x86 xorriso mtools make python3
-# Install Zig from https://ziglang.org/download/
+sudo apt install qemu-system-x86 xorriso mtools make python3 ovmf
+# Install Zig 0.15.2 from https://ziglang.org/download/
 ```
 
 ## Build and Run
 
-The project uses a `Makefile` to automate the build process.
+```bash
+make all
+```
 
-1. **Build and Run (QEMU)**:
-   ```bash
-   make all
-   ```
-   This command will:
-   - Generate the IR using Python.
-   - Compile the Zig kernel.
-   - Create a bootable UEFI ISO.
-   - Launch the kernel in QEMU.
+This will:
+1. Run `kernel.py` to generate `src/ir_generated.bin`
+2. Compile the Zig runtime into `BOOTX64.EFI`
+3. Package a bootable UEFI ISO
+4. Launch in QEMU with OVMF firmware
 
-2. **Clean Build Artifacts**:
-   ```bash
-   make clean
-   ```
+```bash
+make clean
+```
 
 ## Project Structure
 
-- `kernel.py`: The Python script that defines the kernel logic and compiles it into `src/ir_generated.bin`.
-- `src/main.zig`: The main entry point for the UEFI application.
-- `src/root.zig`: Contains the IR interpreter and hardware definitions (Serial, etc.).
-- `build.zig`: Zig build configuration, ensuring Python runs before the Zig build.
-- `Makefile`: Orchestrates the entire build and emulation workflow.
+```
+kernel.py          # Python DSL compiler — generates IR binary
+toml/
+  hardware.toml    # Opcode assignments, device addresses, port map
+  commands.toml    # Shell command definitions
+src/
+  main.zig         # UEFI entry point
+  root.zig         # IR interpreter, hardware abstraction layer
+  ir_generated.bin # Compiled IR output (generated by kernel.py)
+build.zig          # Zig build configuration
+Makefile           # Build orchestration
+```
 
 ## License
 
-This project is open source.
+This project is licensed under the GNU General Public License v3.0.
+See LICENSE for details.
