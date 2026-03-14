@@ -1,0 +1,21 @@
+# Catalyst Kernel – shell command definitions.
+# Each command has a name, description, and an optional list of arguments.
+# The kernel.py shell compiler reads this file to generate the IR dispatch table.
+
+[commands.help]
+description = "Show available commands"
+args        = []
+
+[commands.echo]
+description = "Print text to the console"
+args        = [
+    { name = "text", required = true, variadic = true }
+]
+
+[commands.clear]
+description = "Clear the console screen"
+args        = []
+
+[commands.version]
+description = "Show kernel version"
+args        = []
