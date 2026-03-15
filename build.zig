@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Python IR builder stage
-    const python_step = b.addSystemCommand(&.{ "python", "frontend/entry.py" });
+    const python_step = b.addSystemCommand(&.{ "python3", "frontend/entry.py" });
 
     const mod = b.addModule("CatalystKernel", .{
         .root_source_file = b.path("backend/src/root.zig"),
