@@ -14,9 +14,7 @@ All OP_* names are bound dynamically so that the TOML file remains the
 single source of truth.  Import this module to access opcode values;
 do not hard-code numeric literals elsewhere.
 """
-import os
 import tomllib
-print(os.getcwd())
 
 # ---------------------------------------------------------------------------
 # Hardware configuration
@@ -88,3 +86,22 @@ OP_HALT = OPCODES["halt"]
 
 # Size of the i32 offset field appended to every jump instruction.
 JMP_OFFSET_SIZE = 4
+
+__all__ = [
+    "OPCODES", "DEVICES", "PORTS", "COMMANDS",
+    "JMP_OFFSET_SIZE",
+    "OP_LITERAL",
+    "OP_WRITE_SERIAL", "OP_WRITE_STR", "OP_WRITE_CONSOLE",
+    "OP_WRITE_CON_STR", "OP_CLEAR_SCREEN", "OP_WRITE_LINE",
+    "OP_ADD_U32", "OP_SUB_U32", "OP_MUL_U32", "OP_DIV_U32", "OP_MOD_U32",
+    "OP_CMP_EQ", "OP_CMP_LT", "OP_CMP_GT", "OP_CMP_NEQ", "OP_CMP_GTE", "OP_CMP_LTE",
+    "OP_MEM_WRITE", "OP_MEM_READ", "OP_MEM_COPY", "OP_MEM_INDEX",
+    "OP_READ_PORT", "OP_WRITE_PORT",
+    "OP_PUSH", "OP_POP", "OP_DUP", "OP_SWAP",
+    "OP_BIT_AND", "OP_BIT_OR", "OP_BIT_XOR", "OP_BIT_NOT", "OP_BIT_SHL", "OP_BIT_SHR",
+    "OP_INT_CLI", "OP_INT_STI", "OP_INT_N",
+    "OP_MAP_PAGE", "OP_UNMAP_PAGE", "OP_GET_MEM_MAP",
+    "OP_LOOP", "OP_JMP", "OP_JMP_IF_ZERO", "OP_JMP_IF_EQ", "OP_JMP_IF_LT",
+    "OP_POLL_KEY", "OP_READ_LINE",
+    "OP_HALT",
+]

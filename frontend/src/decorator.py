@@ -67,6 +67,7 @@ from .opcodes import (
     OP_JMP_IF_LT,
     OP_JMP_IF_ZERO,
     OP_LITERAL,
+    OP_LOOP,
     OP_MAP_PAGE,
     OP_MEM_COPY,
     OP_MEM_INDEX,
@@ -561,8 +562,7 @@ class KernelDecorator:
             # Encoding: [loop] [count: u32 LE] [body_len: u32 LE] [body bytes...]
             # Serialize body into a temporary buffer to measure its length before
             # emitting the header, so that body_len is known at write time.
-            from opcodes import OP_LOOP as _OP_LOOP
-            self.ir_buffer.append(_OP_LOOP)
+            self.ir_buffer.append(OP_LOOP)
             self.ir_buffer += struct.pack("<I", node.count)
             body_buf = bytearray()
             for item in node.body:
@@ -622,7 +622,10 @@ class KernelDecorator:
             self.ir_buffer += struct.pack("<i", node.offset)
 
     def save(self) -> None:
-        os.makedirs("backend/src/kernel", exist_ok=True)
         """Write the accumulated IR buffer to disk."""
+        os.makedirs("backend/src/kernel", exist_ok=True)
         with open("backend/src/kernel/ir_generated.bin", "wb") as f:
             f.write(self.ir_buffer)
+
+
+__all__ = ["KernelDecorator", "ShellCompiler", "emit_strcmp_token"]
