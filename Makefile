@@ -35,4 +35,4 @@ run: iso
 	   -serial stdio
 
 clean:
-	rm -rf iso_root zig-out $(ISO) .zig-cache /tmp/zig-cache /tmp/zig-global-cache
+	rm -rf iso_root zig-out $(ISO) .zig-cache /tmp/zig-cache /tmp/zig-global-cache output backend/src/kernel
